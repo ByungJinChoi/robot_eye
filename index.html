@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-<title>Robot Eyes (Front Cam Motion Follow)</title>
+<title>Robot Eyes (Cam Motion + 6-Color Detect)</title>
 <style>
   :root{
     --eye-gap: 8vmin;          /* 세로 기준 간격 */
@@ -40,7 +40,7 @@
   #fsBtn.hidden{ display:none; }
   #fsBtn:active{ transform: translateY(1px); }
 
-  /* 좌상단 상태 배지(선택) */
+  /* 좌상단 상태 배지(카메라) */
   #camStatus{
     position: fixed; top:12px; left:12px; z-index:10;
     font:600 12px system-ui; color:#fff; padding:.35rem .6rem;
@@ -48,10 +48,26 @@
     background:rgba(0,0,0,.35); backdrop-filter:blur(6px)
   }
 
-  /* 숨김 카메라 프리뷰(처리용): 일부 기기는 화면 내에 있어야 프레임 갱신이 안정적 */
+  /* 하단 색상 인식 배지 (색이 바뀔 때만 갱신) */
+  #colorBadge{
+    position: fixed; left:50%; transform:translateX(-50%);
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 10;
+    display: none;
+    font: 700 14px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #fff; padding:.5rem .8rem; border-radius: 999px;
+    border:1px solid rgba(255,255,255,.3);
+    background: rgba(0,0,0,.35); backdrop-filter: blur(6px);
+  }
+  #colorBadge .dot{
+    display:inline-block; width:.9em; height:.9em; border-radius:50%;
+    margin-right:.5em; vertical-align:-0.12em; box-shadow:0 0 0 2px rgba(255,255,255,.2) inset;
+  }
+
+  /* 처리용 전면 카메라 프리뷰(아주 작게, 거울효과) */
   video#cam{
     position: fixed; left:0; bottom:0; width:12px; height:12px;
-    opacity: .05; pointer-events:none; z-index:0; transform: scaleX(-1); /* 전면카메라 거울 효과 */
+    opacity: .05; pointer-events:none; z-index:0; transform: scaleX(-1);
   }
 
   .face{ height:100%; display:grid; place-items:center; }
@@ -83,8 +99,9 @@
 <body>
   <button id="fsBtn">전체화면</button>
   <div id="camStatus">Cam: off</div>
+  <div id="colorBadge"><span class="dot"></span><span class="label">—</span></div>
 
-  <!-- 전면 카메라 프리뷰(처리용, 매우 작고 흐리게 표시) -->
+  <!-- 전면 카메라(처리용) -->
   <video id="cam" playsinline muted autoplay></video>
 
   <div class="face" id="face">
@@ -100,6 +117,10 @@
   const fsBtn = document.getElementById('fsBtn');
   const camVid = document.getElementById('cam');
   const camBadge = document.getElementById('camStatus');
+  const colorBadge = document.getElementById('colorBadge');
+  const colorDot = colorBadge.querySelector('.dot');
+  const colorLabel = colorBadge.querySelector('.label');
+
   const eyes = [...document.querySelectorAll('.eye')];
   const pupils = [...document.querySelectorAll('.pupil')];
 
@@ -137,7 +158,6 @@
     });
   }
   function tick(){
-    // 스무딩 강도(0.18~0.28 사이 취향대로)
     current.x = lerp(current.x, target.x, 0.20);
     current.y = lerp(current.y, target.y, 0.20);
     renderPupils(current.x, current.y);
@@ -162,30 +182,81 @@
   addEventListener('pointermove', handlePointer, {passive:true});
   addEventListener('pointerdown', handlePointer, {passive:true});
 
-  /* ===== 전면 카메라: 모션 방향 추적 ===== */
+  /* ===== 전면 카메라: 움직임 방향 + 색상 인식 ===== */
   let camStream = null;
+  const LOW_W = 64, LOW_H = 48;              // 다운샘플 크기
+  const DIFF_T = 22;                         // 프레임차 임계 (노이즈 컷)
+  const MASS_T = 14000;                      // 모션 총량 임계 (색 판정 최소 조건)
+  const S_T = 0.25, V_T = 0.18;              // 저채도/저명도 컷
+  const HOLD_MS = 280;                       // 색 변경 디바운스 시간
+  const CATS = ['빨','주','노','초','파','보'];
+  const CAT2FULL = { '빨':'빨강','주':'주황','노':'노랑','초':'초록','파':'파랑','보':'보라' };
+  const CAT2H =   { '빨':0, '주':28, '노':55, '초':120, '파':210, '보':285 }; // 표시용 대표 Hue
+
   let procCvs = document.createElement('canvas');
   let procCtx = procCvs.getContext('2d', { willReadFrequently:true });
-  const LOW_W = 64, LOW_H = 48;      // 다운샘플 크기(부하/감도 트레이드오프)
-  const DIFF_T = 22;                 // 픽셀 차이 임계값(노이즈 컷)
-  const MASS_T = 16000;              // 모션 총량 임계(환경 노이즈 무시)
+  procCvs.width = LOW_W; procCvs.height = LOW_H;
 
   let prevGray = null;
   let motionRAF = null;
   let camEnabled = false;
 
-  async function startCamFollow(){
+  // HSV 변환 (0-255 RGB -> H:0..360, S:0..1, V:0..1)
+  function rgb2hsv(r,g,b){
+    r/=255; g/=255; b/=255;
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    const v = max;
+    const d = max - min;
+    const s = max === 0 ? 0 : d / max;
+    let h = 0;
+    if (d !== 0){
+      switch(max){
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+    }
+    return {h, s, v};
+  }
+
+  // Hue → 6색 분류
+  function hueToCat(h){
+    if (h < 15 || h >= 345) return '빨';  // Red
+    if (h < 40) return '주';              // Orange
+    if (h < 70) return '노';              // Yellow
+    if (h < 170) return '초';             // Green
+    if (h < 250) return '파';             // Blue
+    return '보';                          // Violet/Magenta
+  }
+
+  // 배지 표시/갱신 (색이 바뀔 때만)
+  let committedCat = null;
+  let candidateCat = null;
+  let candidateSince = 0;
+  function updateColorBadge(newCat, hueForDot){
+    if (newCat === committedCat) return;
+    const now = performance.now();
+    if (candidateCat !== newCat){
+      candidateCat = newCat; candidateSince = now; return;
+    }
+    if (now - candidateSince < HOLD_MS) return; // 안정화 대기
+
+    // 커밋
+    committedCat = newCat;
+    colorDot.style.background = `hsl(${Math.round(hueForDot)}, 85%, 55%)`;
+    colorLabel.textContent = `${newCat} (${CAT2FULL[newCat]})`;
+    colorBadge.style.display = 'inline-flex';
+  }
+
+  async function startCam(){
     if (camEnabled) return;
     if (!navigator.mediaDevices?.getUserMedia){
       setCamBadge('unavailable'); return;
     }
     try{
       camStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'user' },   // 전면 카메라
-          width: { ideal: 320 }, height: { ideal: 240 },
-          frameRate: { ideal: 30, max: 30 }
-        },
+        video: { facingMode: { ideal:'user' }, width:{ideal:320}, height:{ideal:240}, frameRate:{ideal:30,max:30} },
         audio: false
       });
       camVid.srcObject = camStream;
@@ -196,10 +267,10 @@
     }catch(err){
       console.log('camera error', err);
       setCamBadge('denied');
-      stopCamFollow();
+      stopCam();
     }
   }
-  function stopCamFollow(){
+  function stopCam(){
     camEnabled = false;
     setCamBadge('off');
     if (motionRAF){ cancelAnimationFrame(motionRAF); motionRAF = null; }
@@ -214,50 +285,84 @@
   }
 
   function startMotionLoop(){
-    procCvs.width = LOW_W;
-    procCvs.height = LOW_H;
     const step = ()=>{
       if (!camEnabled || camVid.readyState < 2){ motionRAF = requestAnimationFrame(step); return; }
 
-      // 다운샘플 캡처
       procCtx.drawImage(camVid, 0, 0, LOW_W, LOW_H);
-      const img = procCtx.getImageData(0,0,LOW_W,LOW_H).data;
+      const img = procCtx.getImageData(0,0,LOW_W,LOW_H);
+      const data = img.data;
 
-      // 그레이스케일 + 차이
-      let sx = 0, sy = 0, mass = 0;
-      if (!prevGray) prevGray = new Uint8ClampedArray(LOW_W*LOW_H);
+      // --- 그레이월드(간단 화밸) 보정용 평균 RGB (프레임 전체 기준) ---
+      let sumR=0,sumG=0,sumB=0;
+      for(let p=0; p<data.length; p+=4){ sumR+=data[p]; sumG+=data[p+1]; sumB+=data[p+2]; }
+      const nPix = LOW_W*LOW_H;
+      const mR=sumR/nPix, mG=sumG/nPix, mB=sumB/nPix;
+      const avg=(mR+mG+mB)/3 || 1;
+      const gR = avg/(mR||1), gG = avg/(mG||1), gB = avg/(mB||1); // 채널 게인
 
+      // --- 모션 + 색상 누적 ---
+      if (!prevGray) prevGray = new Uint8ClampedArray(nPix);
+      let mass = 0;
+      // 움직임 무게중심(시선용)
+      let sx=0, sy=0;
+      // 6색 누적 가중치
+      const acc = { '빨':0,'주':0,'노':0,'초':0,'파':0,'보':0 };
+
+      // 한 번에 순회
       for (let y=0, i=0, p=0; y<LOW_H; y++){
         for (let x=0; x<LOW_W; x++, i++){
-          const r = img[p++], g = img[p++], b = img[p++]; p++; // skip a
-          const gray = (r*0.299 + g*0.587 + b*0.114)|0;
+          const r0 = data[p++], g0 = data[p++], b0 = data[p++]; p++; // a skip
+          // 모션은 원본 그레이로
+          const gray = (r0*0.299 + g0*0.587 + b0*0.114)|0;
           const d = Math.abs(gray - prevGray[i]);
           prevGray[i] = gray;
+
           if (d > DIFF_T){
-            const w = d;           // 가중치 = 차이 크기
-            sx += (x - LOW_W/2) * w;
-            sy += (y - LOW_H/2) * w;
-            mass += w;
+            // 시선용 무게중심
+            sx += (x - LOW_W/2) * d;
+            sy += (y - LOW_H/2) * d;
+            mass += d;
+
+            // 색 추정: 화밸 보정 후 HSV, 저채도/저명도는 제외
+            const r = Math.min(255, r0 * gR);
+            const g = Math.min(255, g0 * gG);
+            const b = Math.min(255, b0 * gB);
+            const {h,s,v} = rgb2hsv(r,g,b);
+            if (s > S_T && v > V_T){
+              // 가중치: d * s^1.3 (채도가 높은 픽셀 우대)
+              const w = d * Math.pow(s, 1.3);
+              acc[hueToCat(h)] += w;
+            }
           }
         }
       }
 
-      if (!pointerActive){ // 터치 중이면 무시
+      // ===== 눈동자: 모션 방향으로 (터치 중이면 무시)
+      if (!pointerActive){
         if (mass > MASS_T){
-          // 방향 벡터(전면 카메라 거울효과 보정: x 반전)
-          let nx = -(sx / mass) / (LOW_W/2);
-          let ny =  (sy / mass) / (LOW_H/2);
-          // 데드존 & 클램프
-          const dead = 0.06;
-          nx = Math.abs(nx) < dead ? 0 : nx;
-          ny = Math.abs(ny) < dead ? 0 : ny;
-          // 타깃으로 반영(스무딩은 rAF에서)
-          target.x = clamp1(nx*1.2);   // 감도계수 1.2
+          let nx = -(sx/mass)/(LOW_W/2);  // 전면카메라 x축 반전
+          let ny =  (sy/mass)/(LOW_H/2);
+          const dead=0.06;
+          nx = Math.abs(nx)<dead ? 0 : nx;
+          ny = Math.abs(ny)<dead ? 0 : ny;
+          target.x = clamp1(nx*1.2);
           target.y = clamp1(ny*1.2);
         }else{
-          // 모션 없으면 천천히 가운데로
-          target.x *= 0.985;
-          target.y *= 0.985;
+          // 모션 없으면 서서히 중앙 복귀
+          target.x *= 0.985; target.y *= 0.985;
+        }
+      }
+
+      // ===== 색상 인식: 변화 있을 때만 배지 갱신
+      const totalW = CATS.reduce((s,k)=>s+acc[k],0);
+      if (mass > MASS_T && totalW > 0){
+        // 가장 강한 색과 신뢰도
+        let topCat = '빨', topW = -1;
+        for(const k of CATS){ if (acc[k] > topW){ topW = acc[k]; topCat = k; } }
+        const conf = topW / (totalW || 1);
+        // 너무 애매하면 무시(조명 영향 감소)
+        if (conf >= 0.55){
+          updateColorBadge(topCat, CAT2H[topCat]);
         }
       }
 
@@ -273,13 +378,8 @@
     fsBtn.textContent = fs ? '전체화면 해제' : '전체화면';
     fsBtn.classList.toggle('hidden', fs);
 
-    if (fs){
-      // 전체화면 진입 시 카메라 추적 시도(권한 팝업)
-      startCamFollow();
-    }else{
-      // 전체화면 종료 시 카메라 정지(배터리 절약)
-      stopCamFollow();
-    }
+    if (fs) startCam();
+    else { stopCam(); /* 배터지 절약 */ }
   }
   fsBtn.addEventListener('click', async ()=>{
     try{
@@ -308,8 +408,8 @@
 
   // 백그라운드/복귀 처리
   document.addEventListener('visibilitychange', ()=>{
-    if (document.hidden) stopCamFollow();
-    else if (inFS()) startCamFollow();
+    if (document.hidden) stopCam();
+    else if (inFS()) startCam();
   });
 })();
 </script>
