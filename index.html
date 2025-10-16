@@ -142,7 +142,7 @@
     box-shadow:0 0 0 2px rgba(0,0,0,.25), 0 0 18px rgba(0,255,220,.35);
     pointer-events:none; z-index:2; opacity:.15; transition: opacity .2s linear;
   }
-  /* ★ 추가: 색상 읽기 표시 (캠 화면 아래쪽 중앙) */
+  /* 색상 읽기 표시 (캠 화면 아래쪽 중앙) */
   #colorReadout{
     position:absolute; left:50%; transform:translateX(-50%);
     bottom:12px; z-index:2; display:inline-flex; align-items:center; gap:.55rem;
@@ -224,7 +224,7 @@
 
       <span class="state"><span id="statusDot" class="badgeDot off">off</span></span>
       <button id="connectToggle" class="btn">연결</button>
-      <button id="runToggle" class="btn">▶ 실행</button> <!-- ★ 실행해도 전체화면 없음 -->
+      <button id="runToggle" class="btn">▶ 실행</button> <!-- 실행해도 전체화면 없음 -->
       <button id="fsBtn" class="btn" title="전체화면">전체화면</button>
     </div>
   </header>
@@ -246,7 +246,7 @@
             <span id="camBadge" class="camBadge">Cam: off</span>
             <button id="camToggle" class="btn small">캠 켜기</button>
           </div>
-          <!-- ★ 추가: 색상 표시 바 -->
+          <!-- 색상 표시 바 -->
           <div id="colorReadout"><span class="dot"></span><span class="label">색없음</span></div>
         </div>
       </div>
@@ -261,7 +261,6 @@
   <!-- 툴박스 -->
   <xml id="toolbox" style="display:none">
     <category name="이벤트" colour="#f59e0b">
-      <!-- ★ 드롭다운 색 선택 -->
       <block type="xrobo_start"></block>
     </category>
 
@@ -297,7 +296,432 @@
   </xml>
 
 <script>
-/* ================= 카메라: 프리뷰 + 색 감지 + 움직임 초점 (이전 알고리즘 복원) ================= */
+/* ================= Blockly 기본 설정 ================= */
+class XroboZelosProvider extends Blockly.zelos.ConstantProvider {
+  constructor(){ super(); this.ADD_START_HATS = true; }
+}
+class XroboZelosRenderer extends Blockly.zelos.Renderer {
+  constructor(){ super('xrobo_zelos'); }
+  makeConstants_(){ return new XroboZelosProvider(); }
+}
+Blockly.blockRendering.register('xrobo_zelos', XroboZelosRenderer);
+
+const XroboTheme = Blockly.Theme.defineTheme('xrobo_theme', {
+  base: Blockly.Themes.Zelos, componentStyles: { startHats: true }
+});
+
+var ws = Blockly.inject('blocklyDiv', {
+  toolbox: document.getElementById('toolbox'),
+  renderer: 'xrobo_zelos',
+  theme: XroboTheme,
+  grid: { spacing:20, length:3, colour:'#eee', snap:true },
+  zoom: { controls:true, wheel:true, startScale:1, minScale:0.5, maxScale:2 },
+  move: { scrollbars:true, drag:true, wheel:true },
+  trashcan: true
+});
+
+/* ▼▼▼ Blockly v12 변수 API 경고 제거용 SHIM ▼▼▼ */
+(function patchBlocklyDeprecated(){
+  try{
+    if (Blockly.Workspace &&
+        Blockly.Workspace.prototype &&
+        Blockly.Workspace.prototype.getAllVariables) {
+      Blockly.Workspace.prototype.getAllVariables = function(){
+        var vm = this.getVariableMap ? this.getVariableMap() : null;
+        return (vm && vm.getAllVariables) ? vm.getAllVariables() : [];
+      };
+    }
+  }catch(e){}
+})();
+/* ▲▲▲ SHIM 끝 ▲▲▲ */
+
+/* 드래그 중 자동 스크롤 방지 */
+(function disableAutoScrollWhileBlockDragging(){
+  try{
+    if (Blockly.BlockDragger && Blockly.BlockDragger.prototype) {
+      var orig = Blockly.BlockDragger.prototype.updateDrag;
+      if (typeof orig === 'function') {
+        Blockly.BlockDragger.prototype.updateDrag = function(e){
+          var saved = this.autoScroll_;
+          this.autoScroll_ = null;
+          var r = orig.call(this, e);
+          this.autoScroll_ = saved;
+          return r;
+        };
+      }
+    }
+  }catch(e){ console.warn('AutoScroll patch failed', e); }
+})();
+
+/* ================= 상수/공용 ================= */
+var PINS_OUT=[["OUT1","OUT1"],["OUT2","OUT2"],["OUT3","OUT3"],["OUT4","OUT4"],["OUT5","OUT5"],["OUT6","OUT6"],["OUT7","OUT7"],["OUT8","OUT8"]];
+var SPEEDS=Array.from({length:41},(_,i)=>20-i).map(v=>[String(v),String(v)]);
+var TIMES100=Array.from({length:10},(_,i)=>100*(i+1)).map(v=>[String(v),String(v)]);
+var LED_TGT=[].concat(PINS_OUT,[["CPU","CPU"]]);
+var LED_MODE=[["밝기","BRIGHT"],["숨쉬기","BREATHE"]];
+var LED_VALS=Array.from({length:20},(_,i)=>[String(i),String(i)]);
+
+/* ================= 블록 정의 ================= */
+/* 이벤트: 드롭다운으로 색 선택 */
+const COLOR_OPTIONS = [
+  ["빨간색","RED"],["주황색","ORG"],["노란색","YEL"],
+  ["초록색","GRN"],["파랑색","BLU"],["보라색","VIO"]
+];
+Blockly.defineBlocksWithJsonArray([
+  {
+    "type":"xrobo_start",
+    "message0":"%1 이 보이면",
+    "args0":[{ "type":"field_dropdown","name":"COLOR","options": COLOR_OPTIONS }],
+    "nextStatement":null, "colour":36, "hat":"cap"
+  },
+  { "type":"motor12_dd","message0":"모터 M1 %1  M2 %2  시간 %3 ms",
+    "args0":[{"type":"field_dropdown","name":"M1","options":SPEEDS},{"type":"field_dropdown","name":"M2","options":SPEEDS},{"type":"field_dropdown","name":"MS","options":TIMES100}],
+    "previousStatement":null,"nextStatement":null,"inputsInline":true,"colour":210 },
+  { "type":"motor12_in","message0":"모터 M1 %1  M2 %2  시간 %3 ms",
+    "args0":[{"type":"input_value","name":"M1","check":"Number"},{"type":"input_value","name":"M2","check":"Number"},{"type":"input_value","name":"MS","check":"Number"}],
+    "previousStatement":null,"nextStatement":null,"inputsInline":true,"colour":210 },
+  { "type":"melody","message0":"멜로디 음높이 %1 소리시간 %2 ms 대기시간 %3 ms",
+    "args0":[{"type":"field_dropdown","name":"PITCH","options":(function(){var KR=["도","레","미","파","솔","라","시"], EN=["C","D","E","F","G","A","B"], L=[]; for(var o=4;o<=6;o++) for(var i=0;i<7;i++) L.push([KR[i]+o, EN[i]+o]); return L;})()},
+             {"type":"input_value","name":"DUR","check":"Number"},{"type":"input_value","name":"WAIT","check":"Number"}],
+    "previousStatement":null,"nextStatement":null,"inputsInline":true,"colour":300 },
+  { "type":"led_ctrl","message0":"LED %1 모드 %2 값 %3",
+    "args0":[{"type":"field_dropdown","name":"TGT","options":LED_TGT},{"type":"field_dropdown","name":"MODE","options":LED_MODE},{"type":"field_dropdown","name":"VAL","options":LED_VALS}],
+    "previousStatement":null,"nextStatement":null,"inputsInline":true,"colour":330 },
+  { "type":"wait_seconds","message0":"%1 초 기다리기",
+    "args0":[{"type":"input_value","name":"SEC","check":"Number"}],
+    "previousStatement":null,"nextStatement":null,"inputsInline":true,"colour":120 }
+]);
+
+/* ================= 코드 빌더 ================= */
+function numFromInput(parent, name, def){ if (def===void 0) def=0;
+  var raw = Blockly.JavaScript.valueToCode(parent, name, Blockly.JavaScript.ORDER_NONE);
+  var n = Number(raw != null ? raw : ''); return (isFinite(n) ? n : def);
+}
+function walkNode(b, list){
+  if(!b) return;
+  switch(b.type){
+    case 'motor12_dd':{
+      var v1=+b.getFieldValue('M1'),v2=+b.getFieldValue('M2'),ms=+b.getFieldValue('MS');
+      list.push({type:'CMD',s:'M12 '+v1+' '+v2+' '+ms}); if(ms>0) list.push({type:'W',args:[ms]}); break; }
+    case 'motor12_in':{
+      var v1n=numFromInput(b,'M1',0),v2n=numFromInput(b,'M2',0),msn=numFromInput(b,'MS',0);
+      list.push({type:'CMD',s:'M12 '+Math.round(v1n)+' '+Math.round(v2n)+' '+Math.round(msn)}); if(msn>0) list.push({type:'W',args:[msn]}); break; }
+    case 'melody':{
+      var p=b.getFieldValue('PITCH'),dur=numFromInput(b,'DUR',200),wait=numFromInput(b,'WAIT',0);
+      list.push({type:'CMD',s:'MEL '+p+' '+Math.round(dur)+' '+Math.round(wait)}); if(wait>0) list.push({type:'W',args:[wait]}); break; }
+    case 'led_ctrl':{
+      var t=b.getFieldValue('TGT'),m=b.getFieldValue('MODE'),v=+b.getFieldValue('VAL');
+      list.push({type:'CMD',s:'LED '+t+' '+m+' '+v}); break; }
+    case 'controls_repeat_ext':{
+      var times=Math.max(0, numFromInput(b,'TIMES',1));
+      var inner=[]; var first=b.getInputTargetBlock('DO'); walkChain(first, inner);
+      list.push({type:'FOR',count:times,body:inner}); break; }
+    case 'wait_seconds':{
+      var s=numFromInput(b,'SEC',1); if(s>0) list.push({type:'W',args:[s*1000]}); break; }
+  }
+}
+function walkChain(start, list){ for(var n=start; n; n=n.getNextBlock()) walkNode(n, list); }
+function normalizeProgram(list){
+  var out=[]; for(var i=0;i<list.length;i++){
+    var ins=list[i];
+    if(ins.type==='CMD'){ var prev=out[out.length-1]; if(prev && prev.type==='CMD' && prev.s===ins.s) continue; }
+    else if(ins.type==='W'){
+      if(!isFinite(ins.args && ins.args[0]) || ins.args[0]<=0) continue;
+      var prevw=out[out.length-1]; if(prevw && prevw.type==='W'){ prevw.args[0]+=ins.args[0]; continue; }
+    }
+    out.push(ins);
+  }
+  return out;
+}
+
+/* 드롭다운 색별 프로그램 테이블 빌드 */
+function buildEventPrograms(){
+  const programs = { RED:[], ORG:[], YEL:[], GRN:[], BLU:[], VIO:[] };
+  var evs = ws.getBlocksByType('xrobo_start', true);
+  for(var i=0;i<evs.length;i++){
+    var colorCode = evs[i].getFieldValue('COLOR') || 'RED';
+    var chain = evs[i].getNextBlock(); if(!chain) continue;
+    var prog=[]; walkChain(chain, prog);
+    var norm = normalizeProgram(prog);
+    programs[colorCode] = programs[colorCode].concat(norm);
+  }
+  return programs;
+}
+
+/* ================= 헤더/스케일/풀스크린 ================= */
+function applyHeaderHeight(){
+  var px = document.getElementById('appHeader').offsetHeight || 64;
+  document.documentElement.style.setProperty('--headerH', px+'px');
+  setTimeout(function(){ Blockly.svgResize(ws); }, 60);
+}
+function applyUiScaleFromWorkspace(){
+  var s = Math.max(.7, Math.min(1.6, ws.getScale()));
+  document.documentElement.style.setProperty('--uiScale', s);
+  applyHeaderHeight();
+}
+window.addEventListener('resize', applyHeaderHeight);
+document.addEventListener('fullscreenchange', applyHeaderHeight);
+ws.addChangeListener(function(ev){
+  if(ev && ev.type===Blockly.Events.UI && ev.element==='zoom'){ applyUiScaleFromWorkspace(); }
+});
+setInterval(function(){ applyUiScaleFromWorkspace(); }, 200);
+applyUiScaleFromWorkspace();
+applyHeaderHeight();
+
+/* ================= BLE & 로그 ================= */
+var SERVICE_UUID=0xFFF0;
+var bleDevice=null,bleServer=null,bleService=null,writeChar=null,notifyChar=null;
+var isConnected=false, isRunning=false;
+var $=id=>document.getElementById(id);
+var log=function(m){ var L=$('log'); L.textContent+=m+"\n"; L.scrollTop=L.scrollHeight; };
+var dot=$('statusDot');
+var btnConnect=$('connectToggle'), btnRun=$('runToggle');
+
+var enc = s=> new TextEncoder().encode(s);
+
+function resetBleRefs(){ bleDevice=null; bleServer=null; bleService=null; writeChar=null; notifyChar=null; }
+function setConnected(v){
+  isConnected=v;
+  btnConnect.textContent=v?'해제':'연결';
+  btnRun.disabled=false; /* BLE 없어도 실행 가능 */
+  dot.classList.toggle('on',v); dot.classList.toggle('off',!v);
+  dot.textContent=v?'on':'off';
+  if(!v) setRunning(false);
+}
+/* 전체화면 오버레이 제거된 간단 실행 상태 */
+function setRunning(v){
+  isRunning=v;
+  btnRun.textContent=v?'■ 정지':'▶ 실행';
+  btnRun.style.background = v ? '#ef4444' : '#16a34a';
+}
+
+function connectBLE(){
+  if(!navigator.bluetooth){ alert('이 브라우저는 Web Bluetooth 미지원입니다.'); return; }
+  (async function(){
+    try{
+      var dev = await navigator.bluetooth.requestDevice({
+        filters:[{ namePrefix:'XROBO' }],
+        optionalServices:[SERVICE_UUID, 0xFFF3, 0xFFF4]
+      });
+      try{ if (bleDevice && bleDevice.removeEventListener){ bleDevice.removeEventListener('gattserverdisconnected', onDisconnected); } }catch(e){}
+      resetBleRefs();
+      bleDevice=dev;
+      if (bleDevice && bleDevice.addEventListener){ bleDevice.addEventListener('gattserverdisconnected', onDisconnected); }
+
+      bleServer=await bleDevice.gatt.connect();
+      bleService=await bleServer.getPrimaryService(SERVICE_UUID);
+
+      try{ writeChar=await bleService.getCharacteristic(0xFFF3);}catch(e){}
+      try{ notifyChar=await bleService.getCharacteristic(0xFFF4);}catch(e){}
+      if(!writeChar || notifyChar==null){
+        var cs=await bleService.getCharacteristics();
+        for(var i=0;i<cs.length;i++){
+          var ch=cs[i], p=ch.properties||{};
+          if(!writeChar && (p.write||p.writeWithoutResponse)) writeChar=ch;
+          if(!notifyChar && p.notify) notifyChar=ch;
+        }
+      }
+      if(!writeChar) throw new Error('write 특성을 찾지 못했습니다.');
+      if(notifyChar){
+        await notifyChar.startNotifications();
+        if (notifyChar.addEventListener){
+          notifyChar.addEventListener('characteristicvaluechanged',function(ev){
+            try{ var v=new TextDecoder().decode(ev.target.value||new Uint8Array()); log('⬅️ '+v.trim()); }catch(e){}
+          });
+        }
+      }
+      setConnected(true);
+      log('✅ 연결: '+(dev.name||'(이름 없음)'));
+    }catch(e){
+      console.error(e); log('❌ 연결 실패: '+e);
+      setConnected(false); resetBleRefs();
+    }
+  })();
+}
+function onDisconnected(){ log('🔌 해제됨'); setConnected(false); resetBleRefs(); }
+function disconnectBLE(){ try{ if (bleDevice && bleDevice.gatt) bleDevice.gatt.disconnect(); }catch(e){} setConnected(false); resetBleRefs(); }
+btnConnect.onclick = ()=> isConnected ? disconnectBLE() : connectBLE();
+
+/* ================= 저장/불러오기 ================= */
+function serializeProject(){
+  var xmlDom = Blockly.Xml.workspaceToDom(ws);
+  var xmlText = Blockly.Xml.domToText(xmlDom);
+  return JSON.stringify({type:'xrobo_project_v1', xml: xmlText}, null, 2);
+}
+function saveProject(){
+  var data = serializeProject();
+  var suggestedName = 'xrobo_project.json';
+  if(window.showSaveFilePicker){
+    (async function(){
+      try{
+        var handle = await showSaveFilePicker({
+          suggestedName:suggestedName,
+          types:[{description:'XROBO Project', accept:{'application/json':['.json']}}]
+        });
+        var stream = await handle.createWritable();
+        await stream.write(new Blob([data], {type:'application/json'}));
+        await stream.close();
+        log('💾 저장 완료');
+      }catch(e){ if(!(e && e.name==='AbortError')) log('⚠️ 저장 실패: '+e); }
+    })();
+  }else{
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([data], {type:'application/json'}));
+    a.download=suggestedName; a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); }, 1000);
+    log('💾 저장(다운로드) 완료');
+  }
+}
+function loadProject(){
+  (async function(){
+    try{
+      var text='';
+      if(window.showOpenFilePicker){
+        var arr = await showOpenFilePicker({
+          types:[{description:'XROBO Project', accept:{'application/json':['.json']}}]
+        });
+        var handle = arr[0];
+        var file = await handle.getFile();
+        text = await file.text();
+      }else{
+        var input=document.createElement('input');
+        input.type='file'; input.accept='.json,application/json';
+        var pick = new Promise((res,rej)=>{ input.onchange=()=>{ res(input.files[0]||null); }; input.onerror=rej; });
+        input.click();
+        var file = await pick;
+        if(!file) return;
+        text = await file.text();
+      }
+      var obj = JSON.parse(text);
+      if(!obj || obj.type!=='xrobo_project_v1') throw new Error('알 수 없는 프로젝트 형식');
+      ws.clear();
+      var parser = new DOMParser();
+      var xml = parser.parseFromString(obj.xml, 'text/xml');
+      Blockly.Xml.domToWorkspace(xml.documentElement, ws);
+      log('📂 불러오기 완료');
+    }catch(e){
+      if(!(e && e.name==='AbortError')) alert('불러오기 실패: '+e);
+    }
+  })();
+}
+$('saveBtn').addEventListener('click', saveProject);
+$('openBtn').addEventListener('click', loadProject);
+
+/* ================= 오른쪽 패널: 리사이저 ================= */
+(function(){
+  var divider = document.getElementById('rightDivider');
+  var root = document.documentElement;
+  var dragging=false, startY=0, startH=0, rightH=0;
+  function pxToNum(px){ return Number(String(px).replace('px',''))||0; }
+  function onDown(e){
+    e.preventDefault();
+    dragging=true;
+    startY=('touches' in e ? e.touches[0].clientY : e.clientY);
+    startH=pxToNum(getComputedStyle(root).getPropertyValue('--logH'));
+    rightH=document.getElementById('right').clientHeight;
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('mouseup', onUp, {once:true});
+    window.addEventListener('touchend', onUp, {once:true});
+  }
+  function onMove(e){
+    if(!dragging) return;
+    var y=('touches' in e ? e.touches[0].clientY : e.clientY);
+    if('touches' in e) e.preventDefault();
+    var delta = startY - y;
+    var nh = startH + delta;
+    var minH=90, maxH=Math.max(130, Math.floor(rightH*0.8));
+    nh=Math.min(maxH, Math.max(minH, nh));
+    root.style.setProperty('--logH', nh+'px');
+  }
+  function onUp(){
+    dragging=false;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('touchmove', onMove);
+  }
+  divider.addEventListener('mousedown', onDown);
+  divider.addEventListener('touchstart', onDown, {passive:false});
+})();
+
+/* ================= 패널 토글 & 전체화면 ================= */
+var panelHandle=document.getElementById('panelHandle');
+function syncHandle(){
+  var collapsed = document.body.classList.contains('panel-collapsed');
+  panelHandle.classList.toggle('open',   !collapsed);
+  panelHandle.classList.toggle('closed',  collapsed);
+  panelHandle.title = collapsed ? '실행창 열기' : '실행창 닫기';
+}
+function togglePanel(){ document.body.classList.toggle('panel-collapsed'); syncHandle(); setTimeout(()=>{ Blockly.svgResize(ws); },60); }
+panelHandle.addEventListener('click', togglePanel);
+syncHandle();
+
+var fsBtn=document.getElementById('fsBtn');
+async function enterFS(){ var el=document.documentElement; if(el.requestFullscreen) await el.requestFullscreen(); }
+async function exitFS(){ if(document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen(); }
+function syncFSLabel(){
+  var a = !!document.fullscreenElement;
+  document.body.classList.toggle('fs-active', a);
+  fsBtn.textContent = a ? '화면축소' : '전체화면';
+  fsBtn.title = a ? '화면 축소로 전환' : '전체화면으로 전환';
+  applyHeaderHeight();
+}
+fsBtn.onclick=async function(){ if(document.fullscreenElement) await exitFS(); else await enterFS(); };
+document.addEventListener('fullscreenchange', syncFSLabel);
+syncFSLabel();
+
+/* ================= 실행(큐) ================= */
+var eventPrograms = {};
+var queue = [];
+var queueBusy = false;
+var cancelToken = 0;
+
+function sendRaw(s){
+  if(!writeChar){ log('➡️(BLE 미연결) '+s); return Promise.resolve(); }
+  return writeChar.writeValue(enc(s+'\n')).then(()=>{ log('➡️ '+s); }).catch(e=>{ log('⚠️ 전송 실패: '+e); });
+}
+async function processQueue(localToken){
+  if(queueBusy) return;
+  queueBusy = true;
+  try{
+    while(queue.length && localToken === cancelToken){
+      var item = queue.shift();
+      await runList(item.list, localToken);
+    }
+  }finally{ queueBusy = false; }
+}
+async function runList(list, localToken){
+  for(var i=0;i<list.length;i++){
+    var ins=list[i];
+    if(localToken !== cancelToken) return;
+    if(ins.type==='CMD'){ await sendRaw(ins.s); }
+    else if(ins.type==='W'){ var ms = (ins.args && ins.args[0]) ? ins.args[0] : 0; await new Promise(r=>setTimeout(r, ms)); }
+    else if(ins.type==='FOR'){
+      for(var k=0;k<ins.count;k++){ if(localToken !== cancelToken) return; await runList(ins.body, localToken); }
+    }
+  }
+}
+function triggerEvent(name){
+  if(!isRunning) return;
+  var seq = eventPrograms[name];
+  if(seq && seq.length){
+    queue.push({list: seq});
+    var myToken = cancelToken;
+    processQueue(myToken);
+  }
+}
+btnRun.onclick = function(){
+  if(!isRunning){
+    eventPrograms = buildEventPrograms();
+    cancelToken++; queue = [];
+    setRunning(true);
+  }else{
+    cancelToken++; queue=[];
+    setRunning(false);
+    try{ if(writeChar) writeChar.writeValue(enc('S\n')); }catch(e){}
+  }
+};
+
+/* ================= 카메라: 프리뷰 + 색 감지(복원) + 움직임 초점 ================= */
 const camVideo = $('camVideo');
 const camToggle = $('camToggle');
 const camBadge  = $('camBadge');
@@ -308,7 +732,7 @@ const colorLabel = colorReadout.querySelector('.label');
 
 let camStream = null, camOn = false, camRAF = null;
 
-/* === 파라미터 (이전값으로 복원) === */
+/* 이전 파이프라인의 파라미터 */
 const LOW_W = 64, LOW_H = 48;       // 처리 해상도
 const DIFF_T = 22;                   // 프레임 차 임계(모션 픽셀)
 const MASS_T = 14000;                // 모션 총량 임계(충분히 움직일 때만 색 판정)
@@ -316,7 +740,7 @@ const S_T = 0.25;                    // 채도 컷
 const V_T = 0.18;                    // 명도 컷
 const HOLD_MS = 280;                 // 색 변경 디바운스
 const CONF_MIN = 0.55;               // 최상위 색 비율 최소 신뢰도
-const FOCUS_LERP = 0.20;             // 초점 이동 스무딩(그대로)
+const FOCUS_LERP = 0.20;             // 초점 이동 스무딩
 
 const NAME_KR = { RED:'빨간색', ORG:'주황색', YEL:'노란색', GRN:'초록색', BLU:'파랑색', VIO:'보라색', NONE:'색없음' };
 const HUE_MAP = { RED:0, ORG:28, YEL:55, GRN:120, BLU:210, VIO:285 };
@@ -325,7 +749,7 @@ const procCvs = document.createElement('canvas');
 const procCtx = procCvs.getContext('2d', { willReadFrequently:true });
 procCvs.width = LOW_W; procCvs.height = LOW_H;
 
-/* 유틸: RGB→HSV, Hue→카테고리 (기존과 동일) */
+/* 유틸: RGB→HSV, Hue→카테고리 */
 function rgb2hsv(r,g,b){
   r/=255; g/=255; b/=255;
   const max=Math.max(r,g,b), min=Math.min(r,g,b);
@@ -351,7 +775,7 @@ function hueToCat(h){
   return 'VIO';
 }
 
-/* UI 업데이트 (기존 로직 유지) */
+/* UI */
 function updateCamUi(){
   camBadge.textContent = 'Cam: ' + (camOn ? 'on' : 'off');
   camToggle.textContent = camOn ? '캠 끄기' : '캠 켜기';
@@ -366,7 +790,7 @@ function updateColorReadout(code){
   }
 }
 
-/* 캠 ON/OFF (기존과 동일) */
+/* 캠 ON/OFF */
 async function startCam(){
   if(camOn) return;
   try{
@@ -392,7 +816,7 @@ function stopCam(){
   camStream = null; camOn=false; updateCamUi();
   if(camRAF){ cancelAnimationFrame(camRAF); camRAF=null; }
   // 상태 리셋
-  activeColor='NONE'; candColor='NONE'; lastEventColor=null;
+  activeColor='NONE'; candColor='NONE'; prevActiveColor='NONE';
   updateColorReadout('NONE');
   focusBox.style.opacity='.15';
   focusBox.style.left='50%'; focusBox.style.top='50%';
@@ -400,23 +824,23 @@ function stopCam(){
 }
 camToggle.onclick = ()=> camOn ? stopCam() : startCam();
 
-/* 색 안정화/이벤트 상태 (변경 없음) */
-let activeColor = 'NONE';   // 화면에 표시중인 확정 색
+/* 색 안정화/이벤트 상태 */
+let activeColor = 'NONE';   // 현재 확정 색
 let candColor   = 'NONE';   // 후보 색
 let candSince   = 0;
-let lastEventColor = null;  // 마지막 이벤트 색
+let prevActiveColor = 'NONE'; // 직전 확정 색(변경 감지용)
 
-/* === 핵심: 이전 알고리즘으로 복원된 검출 루프 === */
+/* 검출 루프 (이전 알고리즘) */
 function startDetectLoop(){
   const step = ()=>{
     if(!camOn || camVideo.readyState < 2){ camRAF = requestAnimationFrame(step); return; }
 
-    // 0) 프레임 캡처
+    // 프레임 캡처
     procCtx.drawImage(camVideo, 0, 0, LOW_W, LOW_H);
     const img = procCtx.getImageData(0,0,LOW_W,LOW_H);
     const data = img.data;
 
-    // 1) 그레이월드(화이트밸런스) 보정 게인 계산 (프레임 전체 평균)
+    // 그레이월드 게인 계산
     let sumR=0,sumG=0,sumB=0;
     for(let p=0;p<data.length;p+=4){ sumR+=data[p]; sumG+=data[p+1]; sumB+=data[p+2]; }
     const nPix = LOW_W*LOW_H;
@@ -424,7 +848,7 @@ function startDetectLoop(){
     const avg=(mR+mG+mB)/3 || 1;
     const gR = avg/(mR||1), gG = avg/(mG||1), gB = avg/(mB||1);
 
-    // 2) 모션 + 색 누적 (이전 방식)
+    // 모션 + 색 누적
     if (!step.prevGray) step.prevGray = new Uint8ClampedArray(nPix);
     let mass=0, sxa=0, sya=0;
     const acc = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
@@ -432,13 +856,12 @@ function startDetectLoop(){
     for(let y=0, i=0, p=0; y<LOW_H; y++){
       for(let x=0; x<LOW_W; x++, i++){
         const r0=data[p++], g0=data[p++], b0=data[p++]; p++; // a skip
-
         // 모션 픽셀 선별
         const gray = (r0*0.299 + g0*0.587 + b0*0.114)|0;
         const d = Math.abs(gray - step.prevGray[i]);
         step.prevGray[i] = gray;
         if (d > DIFF_T){
-          // 모션 무게중심(초점 박스용)
+          // 모션 무게중심
           sxa += x*d; sya += y*d; mass += d;
 
           // 색 추정: 화밸 보정 → HSV → 컷
@@ -447,7 +870,7 @@ function startDetectLoop(){
           const b = Math.min(255, b0*gB);
           const {h,s,v} = rgb2hsv(r,g,b);
           if (s > S_T && v > V_T){
-            // 가중치: 모션 강도 d × 채도^1.3  (이전과 동일)
+            // 가중치: d × s^1.3
             const w = d * Math.pow(s, 1.3);
             acc[hueToCat(h)] += w;
           }
@@ -455,10 +878,10 @@ function startDetectLoop(){
       }
     }
 
-    // 3) 움직임 초점 박스 (모션량 충분할 때만)
+    // 움직임 초점 박스
     if (mass > MASS_T){
-      const cx = sxa / mass, cy = sya / mass;        // 0..LOW_W-1 / 0..LOW_H-1
-      const fx = 1 - (cx / (LOW_W-1));               // 전면카메라 거울 보정
+      const cx = sxa / mass, cy = sya / mass;
+      const fx = 1 - (cx / (LOW_W-1));  // 전면 카메라 좌우 반전
       const fy =      (cy / (LOW_H-1));
       const lerp = (a,b,t)=> a + (b-a)*t;
       const curL = parseFloat((focusBox.style.left||'50%'))/100 || .5;
@@ -472,24 +895,26 @@ function startDetectLoop(){
       focusBox.style.opacity = '.15';
     }
 
-    // 4) 색 판정 (모션량이 충분할 때만) → 디바운스 → 변경시에만 이벤트
+    // 색 판정(모션 충분할 때만)
     const totalW = acc.RED+acc.ORG+acc.YEL+acc.GRN+acc.BLU+acc.VIO;
     let frameColor = 'NONE';
     if (mass > MASS_T && totalW > 0){
       let top='RED', topW=-1;
       for(const k in acc){ if(acc[k] > topW){ topW=acc[k]; top=k; } }
       const conf = topW / totalW;
-      if (conf >= CONF_MIN) frameColor = top;    // 아니면 'NONE'
+      if (conf >= CONF_MIN) frameColor = top;
     }
 
+    // 디바운스 & 색 변경시에만 이벤트
     const now = performance.now();
     if (candColor !== frameColor){ candColor = frameColor; candSince = now; }
     if ((now - candSince) >= HOLD_MS && activeColor !== frameColor){
-      activeColor = frameColor;                  // 확정
-      updateColorReadout(activeColor);           // 하단 표시
+      prevActiveColor = activeColor;
+      activeColor = frameColor;              // 확정 색
+      updateColorReadout(activeColor);       // 화면 표시
 
-      if (activeColor !== 'NONE' && lastEventColor !== activeColor){
-        lastEventColor = activeColor;            // “변경시에만” 이벤트 실행
+      // 색이 바뀔 때만 이벤트 (NONE→색, 색→다른 색)
+      if (activeColor !== 'NONE' && activeColor !== prevActiveColor){
         log('🎯 색 감지: ' + activeColor + ' (이벤트 실행)');
         triggerEvent(activeColor);
       }
@@ -501,6 +926,5 @@ function startDetectLoop(){
   camRAF = requestAnimationFrame(step);
 }
 </script>
-
 </body>
 </html>
