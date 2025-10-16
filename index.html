@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-<title>Robot Eyes (Stable + KeepAwake)</title>
+<title>Robot Eyes (Strong KeepAwake)</title>
 <style>
   :root{
     --eye-gap: 8vmin;          /* 세로 기준 간격 */
@@ -40,7 +40,7 @@
   #fsBtn.hidden{ display:none; }
   #fsBtn:active{ transform: translateY(1px); }
 
-  /* 좌상단 Wake Lock 상태 배지(선택) */
+  /* 좌상단 상태 배지 */
   #wlStatus{
     position: fixed; top:12px; left:12px; z-index:10;
     font:600 12px system-ui; color:#fff; padding:.35rem .6rem;
@@ -48,10 +48,10 @@
     background:rgba(0,0,0,.35); backdrop-filter:blur(6px)
   }
 
-  /* 비디오 폴백: 화면 안(좌하단)에 1×1로 존재, 완전히 투명 X(일부 기기에서 off-screen/완전투명 시 스로틀) */
+  /* 폴백 비디오: 화면 내부(좌하단) 8×8px, 거의 안 보이게 */
   video#keepAwake{
-    position: fixed; left:0; bottom:0; width:1px; height:1px;
-    opacity: 0.01; pointer-events:none; z-index:0;
+    position: fixed; left:0; bottom:0; width:8px; height:8px;
+    opacity: 0.06; pointer-events:none; z-index:0;
   }
 
   .face{ height:100%; display:grid; place-items:center; }
@@ -65,8 +65,7 @@
   .pupil{
     position:absolute; width:var(--pupil-size); height:var(--pupil-size);
     border-radius:50%; background: radial-gradient(circle at 40% 35%, #222 0 45%, #000 70%, #000 100%);
-    left:50%; top:50%; transform:translate(-50%,-50%);
-    will-change: transform;
+    left:50%; top:50%; transform:translate(-50%,-50%); will-change: transform;
   }
   .shine{
     position:absolute; width: calc(var(--pupil-size)*.35); height: calc(var(--pupil-size)*.35);
@@ -85,7 +84,7 @@
   <button id="fsBtn">전체화면</button>
   <div id="wlStatus">WakeLock: init</div>
 
-  <!-- 캔버스 스트림 → 1×1 비디오로 재생(폴백용) -->
+  <!-- 강한 폴백: 캔버스 스트림 → 8×8 비디오 재생 -->
   <video id="keepAwake" playsinline muted loop preload="auto"
          controlslist="nodownload nofullscreen noplaybackrate" disablepictureinpicture></video>
 
@@ -104,10 +103,9 @@
   const eyes = [...document.querySelectorAll('.eye')];
   const pupils = [...document.querySelectorAll('.pupil')];
   const keepAwakeVid = document.getElementById('keepAwake');
-
   const setBadge = (t)=> wlBadge && (wlBadge.textContent = 'WakeLock: ' + t);
 
-  /* ========== 깜빡임 ========== */
+  /* ===== 깜빡임 ===== */
   (function scheduleBlink(){
     const t = 2200 + Math.random()*3300;
     setTimeout(() => {
@@ -120,14 +118,12 @@
     }, t);
   })();
 
-  /* ========== 입력 스무딩 & 소스 우선순위 ========== */
-  // - pointer가 활성화되어 있을 때는 자이로 무시 (충돌/떨림 방지)
-  // - rAF 보간(lerp)로 부드럽게 이동
-  let target = {x:0, y:0};
-  let current = {x:0, y:0};
+  /* ===== 시선 스무딩 + 포인터 우선 ===== */
+  let target = {x:0,y:0}, current = {x:0,y:0};
   const clamp1 = v => Math.max(-1, Math.min(1, v));
   const lerp = (a,b,t)=> a + (b-a)*t;
-  function movePupils(nx, ny){
+
+  function renderPupils(nx, ny){
     eyes.forEach((eye, i) => {
       const rect = eye.getBoundingClientRect();
       const rEye = Math.min(rect.width, rect.height)/2;
@@ -140,17 +136,17 @@
     });
   }
   function tick(){
-    // 스무딩 강도: 0.18 (값이 클수록 빠르게 따라감)
+    // 스무딩 강도
     current.x = lerp(current.x, target.x, 0.18);
     current.y = lerp(current.y, target.y, 0.18);
-    movePupils(current.x, current.y);
+    renderPupils(current.x, current.y);
     requestAnimationFrame(tick);
   }
   tick();
 
   let pointerActive = false;
   let pointerIdleTimer = null;
-  function setTarget(nx, ny){ target.x = clamp1(nx); target.y = clamp1(ny); }
+  function setTarget(nx,ny){ target.x = clamp1(nx); target.y = clamp1(ny); }
 
   function handlePointer(e){
     const pt = ('touches' in e) ? e.touches[0] : e;
@@ -166,91 +162,125 @@
   addEventListener('pointerdown', handlePointer, {passive:true});
 
   addEventListener('deviceorientation', e=>{
-    if (pointerActive) return; // 포인터 우선
+    if (pointerActive) return;
     const {beta, gamma} = e; if (beta==null || gamma==null) return;
     setTarget(gamma/30, beta/30);
   }, true);
 
   addEventListener('resize', ()=>{ setTarget(0,0); });
 
-  /* ========== Wake Lock + “캔버스 비디오” 폴백 ========== */
+  /* ===== Wake Lock + Watchdog + 강한 비디오 폴백 ===== */
   let wakeLock = null;
-  let canvas, ctx, stream, rafId = null;
+  let wlWatchdog = null;
 
-  async function requestWakeLock(){
-    try{
-      if ('wakeLock' in navigator && !wakeLock){
-        wakeLock = await navigator.wakeLock.request('screen');
-        wakeLock.addEventListener?.('release', ()=>{ wakeLock = null; setBadge('released'); });
-        setBadge('active');
-        stopVideoFallback();
-      }else if(!('wakeLock' in navigator)){
-        setBadge('unavailable');
-        startVideoFallback();
-      }
-    }catch(err){
-      console.log('WakeLock error:', err);
-      setBadge('error');
-      startVideoFallback();
-      wakeLock = null;
-    }
-  }
-  async function releaseWakeLock(){
-    try{ await wakeLock?.release(); }catch(_){}
-    finally { wakeLock = null; setBadge('off'); stopVideoFallback(); }
-  }
-
+  // 캔버스 스트림 기반 폴백 (실제 프레임이 계속 발생하도록 rAF로 무늬를 바꿈)
+  let canvas=null, ctx=null, stream=null, pumpId=null;
   function startVideoFallback(){
     try{
       if (!('captureStream' in HTMLCanvasElement.prototype)) {
-        setBadge('fallback-unsupported');
-        return;
+        setBadge('fallback-unsupported'); return;
       }
       if (!canvas){
         canvas = document.createElement('canvas');
-        canvas.width = 2; canvas.height = 2;
+        canvas.width = 16; canvas.height = 16;
         ctx = canvas.getContext('2d');
-        stream = canvas.captureStream(1); // 1fps면 충분
+        // 프레임레이트 힌트 (일부 브라우저는 무시하지만 설정해둠)
+        stream = canvas.captureStream(15);
         keepAwakeVid.srcObject = stream;
       }
+      let t=0;
       const pump = ()=>{
-        // 프레임이 실제로 발생하도록 1px 토글 그리기
         if(!ctx) return;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0,0,2,2);
-        rafId = requestAnimationFrame(pump);
+        // 움직이는 체크 패턴 (정적 프레임으로 최적화되는 것을 방지)
+        for(let y=0;y<16;y++){
+          for(let x=0;x<16;x++){
+            const on = ((x+y+t)%2)===0;
+            ctx.fillStyle = on ? '#000' : '#111';
+            ctx.fillRect(x,y,1,1);
+          }
+        }
+        t=(t+1)%4;
+        pumpId = requestAnimationFrame(pump);
       };
-      if(!rafId) rafId = requestAnimationFrame(pump);
-      keepAwakeVid.play().then(()=> setBadge('video-fallback'))
-                         .catch(()=> setBadge('video-fallback(wait)'));
+      if(!pumpId) pumpId = requestAnimationFrame(pump);
+      keepAwakeVid.play()
+        .then(()=> { setBadge('video-fallback'); navigator.mediaSession && (navigator.mediaSession.playbackState='playing'); })
+        .catch(()=> { setBadge('video-fallback(wait)'); });
     }catch(e){
       setBadge('fallback-error');
     }
   }
   function stopVideoFallback(){
-    if (rafId){ cancelAnimationFrame(rafId); rafId = null; }
+    if (pumpId){ cancelAnimationFrame(pumpId); pumpId=null; }
+    if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     if (keepAwakeVid){
       try{ keepAwakeVid.pause(); keepAwakeVid.removeAttribute('src'); }catch(_){}
       keepAwakeVid.srcObject = null;
     }
-    if (stream){
-      stream.getTracks().forEach(t=>t.stop());
-      stream = null; ctx = null; canvas = null;
-    }
+    canvas = null; ctx = null;
   }
 
-  // 앱이 가렸다가(알림/앱전환) 돌아오면 재요청
+  async function acquireWakeLock(tag=''){
+    try{
+      if ('wakeLock' in navigator){
+        if (!wakeLock || (wakeLock.released ?? false)){
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener?.('release', ()=>{ setBadge('released'); wakeLock=null; });
+          setBadge('active');
+        }
+      }else{
+        setBadge('unavailable');
+      }
+    }catch(err){
+      setBadge('error');
+      wakeLock = null;
+    }
+  }
+  async function releaseWakeLock(){
+    try{ await wakeLock?.release(); }catch(_){}
+    finally { wakeLock = null; setBadge('off'); }
+  }
+
+  // 페이지가 가려졌다 돌아올 때 재요청
   document.addEventListener('visibilitychange', ()=>{
-    if (!document.hidden && document.fullscreenElement) requestWakeLock();
+    if (!document.hidden && document.fullscreenElement){
+      acquireWakeLock('visible');
+      // 폴백 비디오가 일시정지됐다면 재생
+      keepAwakeVid && keepAwakeVid.play().catch(()=>{});
+    }
   });
 
-  /* ========== 전체화면 토글 & 더블탭 종료 ========== */
+  // 주기적으로 재획득 + 폴백 재생 유지
+  function startWatchdog(){
+    clearInterval(wlWatchdog);
+    wlWatchdog = setInterval(()=>{
+      if (!document.fullscreenElement) return;
+      acquireWakeLock('watchdog');
+      if (keepAwakeVid && keepAwakeVid.paused){
+        keepAwakeVid.play().catch(()=>{});
+      }
+    }, 30000); // 30초 간격
+  }
+  function stopWatchdog(){
+    clearInterval(wlWatchdog); wlWatchdog = null;
+  }
+
+  /* ===== 전체화면 토글 & 더블탭 종료 ===== */
   const inFS = ()=> !!document.fullscreenElement;
   function onFSChange(){
     const fs = inFS();
     fsBtn.textContent = fs ? '전체화면 해제' : '전체화면';
     fsBtn.classList.toggle('hidden', fs);
-    if (fs) requestWakeLock(); else releaseWakeLock();
+
+    if (fs){
+      acquireWakeLock('enterFS');
+      startWatchdog();
+      startVideoFallback(); // 웨이크락이 먹더라도 폴백을 함께 켬(더 견고)
+    }else{
+      stopWatchdog();
+      releaseWakeLock();
+      stopVideoFallback();
+    }
   }
   fsBtn.addEventListener('click', async ()=>{
     try{
@@ -260,7 +290,7 @@
   });
   document.addEventListener('fullscreenchange', onFSChange);
 
-  // 더블클릭(데스크톱/안드로이드)로 종료
+  // 더블클릭(데스크톱/안드)로 종료
   addEventListener('dblclick', async ()=>{
     if(!inFS()) return;
     try{ await document.exitFullscreen(); }catch(_){}
@@ -275,6 +305,11 @@
       setTimeout(()=>el.classList.remove('blink'),
         parseFloat(getComputedStyle(root).getPropertyValue('--blink-speed')) + 40);
     });
+    // 비디오 폴백 재시도(일부 기기는 제스처 뒤에만 재생 허용)
+    if (document.fullscreenElement){
+      keepAwakeVid && keepAwakeVid.play().catch(()=>{});
+    }
+
     if(!inFS()) return;
     const now = e.timeStamp||Date.now();
     if(now-lastTap<=GAP){
