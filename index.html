@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-<title>Robot Eyes (No Gyro)</title>
+<title>Robot Eyes (Front Cam Motion Follow)</title>
 <style>
   :root{
     --eye-gap: 8vmin;          /* 세로 기준 간격 */
@@ -41,17 +41,17 @@
   #fsBtn:active{ transform: translateY(1px); }
 
   /* 좌상단 상태 배지(선택) */
-  #wlStatus{
+  #camStatus{
     position: fixed; top:12px; left:12px; z-index:10;
     font:600 12px system-ui; color:#fff; padding:.35rem .6rem;
     border:1px solid rgba(255,255,255,.3); border-radius:999px;
     background:rgba(0,0,0,.35); backdrop-filter:blur(6px)
   }
 
-  /* 폴백 비디오: 화면 내부(좌하단) 8×8px, 거의 안 보이게 */
-  video#keepAwake{
-    position: fixed; left:0; bottom:0; width:8px; height:8px;
-    opacity: 0.06; pointer-events:none; z-index:0;
+  /* 숨김 카메라 프리뷰(처리용): 일부 기기는 화면 내에 있어야 프레임 갱신이 안정적 */
+  video#cam{
+    position: fixed; left:0; bottom:0; width:12px; height:12px;
+    opacity: .05; pointer-events:none; z-index:0; transform: scaleX(-1); /* 전면카메라 거울 효과 */
   }
 
   .face{ height:100%; display:grid; place-items:center; }
@@ -82,11 +82,10 @@
 </head>
 <body>
   <button id="fsBtn">전체화면</button>
-  <div id="wlStatus">WakeLock: init</div>
+  <div id="camStatus">Cam: off</div>
 
-  <!-- 강한 폴백: 캔버스 스트림 → 8×8 비디오 재생 -->
-  <video id="keepAwake" playsinline muted loop preload="auto"
-         controlslist="nodownload nofullscreen noplaybackrate" disablepictureinpicture></video>
+  <!-- 전면 카메라 프리뷰(처리용, 매우 작고 흐리게 표시) -->
+  <video id="cam" playsinline muted autoplay></video>
 
   <div class="face" id="face">
     <div class="eyes">
@@ -99,13 +98,14 @@
 (() => {
   const root = document.documentElement;
   const fsBtn = document.getElementById('fsBtn');
-  const wlBadge = document.getElementById('wlStatus');
+  const camVid = document.getElementById('cam');
+  const camBadge = document.getElementById('camStatus');
   const eyes = [...document.querySelectorAll('.eye')];
   const pupils = [...document.querySelectorAll('.pupil')];
-  const keepAwakeVid = document.getElementById('keepAwake');
-  const setBadge = (t)=> wlBadge && (wlBadge.textContent = 'WakeLock: ' + t);
 
-  /* ===== 깜빡임 ===== */
+  const setCamBadge = t => camBadge && (camBadge.textContent = 'Cam: ' + t);
+
+  /* ===== 깜빡임(랜덤) ===== */
   (function scheduleBlink(){
     const t = 2200 + Math.random()*3300;
     setTimeout(() => {
@@ -118,8 +118,9 @@
     }, t);
   })();
 
-  /* ===== 동공 이동: 터치/드래그 전용 (자이로 입력 없음) ===== */
-  let target = {x:0,y:0}, current = {x:0,y:0};
+  /* ===== 동공 이동: 스무딩(lerp) + 입력 소스 통합 ===== */
+  let target = {x:0, y:0};
+  let current = {x:0, y:0};
   const clamp1 = v => Math.max(-1, Math.min(1, v));
   const lerp = (a,b,t)=> a + (b-a)*t;
 
@@ -136,13 +137,17 @@
     });
   }
   function tick(){
-    current.x = lerp(current.x, target.x, 0.18);
-    current.y = lerp(current.y, target.y, 0.18);
+    // 스무딩 강도(0.18~0.28 사이 취향대로)
+    current.x = lerp(current.x, target.x, 0.20);
+    current.y = lerp(current.y, target.y, 0.20);
     renderPupils(current.x, current.y);
     requestAnimationFrame(tick);
   }
   tick();
 
+  /* ===== 포인터(터치/드래그) 우선 ===== */
+  let pointerActive = false;
+  let pointerIdleTimer = null;
   function setTarget(nx,ny){ target.x = clamp1(nx); target.y = clamp1(ny); }
   function handlePointer(e){
     const pt = ('touches' in e) ? e.touches[0] : e;
@@ -150,101 +155,115 @@
     const dx = pt.clientX - cx, dy = pt.clientY - cy;
     const d = Math.hypot(innerWidth, innerHeight) || 1;
     setTarget(dx/(d*0.25), dy/(d*0.25));
+    pointerActive = true;
+    clearTimeout(pointerIdleTimer);
+    pointerIdleTimer = setTimeout(()=> { pointerActive = false; }, 900);
   }
   addEventListener('pointermove', handlePointer, {passive:true});
   addEventListener('pointerdown', handlePointer, {passive:true});
-  addEventListener('resize', ()=>{ setTarget(0,0); });
 
-  /* ===== Wake Lock + Watchdog + 강한 비디오 폴백 ===== */
-  let wakeLock = null;
-  let wlWatchdog = null;
+  /* ===== 전면 카메라: 모션 방향 추적 ===== */
+  let camStream = null;
+  let procCvs = document.createElement('canvas');
+  let procCtx = procCvs.getContext('2d', { willReadFrequently:true });
+  const LOW_W = 64, LOW_H = 48;      // 다운샘플 크기(부하/감도 트레이드오프)
+  const DIFF_T = 22;                 // 픽셀 차이 임계값(노이즈 컷)
+  const MASS_T = 16000;              // 모션 총량 임계(환경 노이즈 무시)
 
-  // 캔버스 스트림 기반 폴백 (실제 프레임이 계속 발생하도록 rAF로 패턴 갱신)
-  let canvas=null, ctx=null, stream=null, pumpId=null;
-  function startVideoFallback(){
+  let prevGray = null;
+  let motionRAF = null;
+  let camEnabled = false;
+
+  async function startCamFollow(){
+    if (camEnabled) return;
+    if (!navigator.mediaDevices?.getUserMedia){
+      setCamBadge('unavailable'); return;
+    }
     try{
-      if (!('captureStream' in HTMLCanvasElement.prototype)) {
-        setBadge('fallback-unsupported'); return;
+      camStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'user' },   // 전면 카메라
+          width: { ideal: 320 }, height: { ideal: 240 },
+          frameRate: { ideal: 30, max: 30 }
+        },
+        audio: false
+      });
+      camVid.srcObject = camStream;
+      await camVid.play();
+      camEnabled = true;
+      setCamBadge('on');
+      startMotionLoop();
+    }catch(err){
+      console.log('camera error', err);
+      setCamBadge('denied');
+      stopCamFollow();
+    }
+  }
+  function stopCamFollow(){
+    camEnabled = false;
+    setCamBadge('off');
+    if (motionRAF){ cancelAnimationFrame(motionRAF); motionRAF = null; }
+    prevGray = null;
+    try{
+      camVid.pause();
+      if (camVid.srcObject){
+        camVid.srcObject.getTracks().forEach(t=>t.stop());
+        camVid.srcObject = null;
       }
-      if (!canvas){
-        canvas = document.createElement('canvas');
-        canvas.width = 16; canvas.height = 16;
-        ctx = canvas.getContext('2d');
-        stream = canvas.captureStream(15);
-        keepAwakeVid.srcObject = stream;
-      }
-      let t=0;
-      const pump = ()=>{
-        if(!ctx) return;
-        for(let y=0;y<16;y++){
-          for(let x=0;x<16;x++){
-            const on = ((x+y+t)%2)===0;
-            ctx.fillStyle = on ? '#000' : '#111';
-            ctx.fillRect(x,y,1,1);
+    }catch(_){}
+  }
+
+  function startMotionLoop(){
+    procCvs.width = LOW_W;
+    procCvs.height = LOW_H;
+    const step = ()=>{
+      if (!camEnabled || camVid.readyState < 2){ motionRAF = requestAnimationFrame(step); return; }
+
+      // 다운샘플 캡처
+      procCtx.drawImage(camVid, 0, 0, LOW_W, LOW_H);
+      const img = procCtx.getImageData(0,0,LOW_W,LOW_H).data;
+
+      // 그레이스케일 + 차이
+      let sx = 0, sy = 0, mass = 0;
+      if (!prevGray) prevGray = new Uint8ClampedArray(LOW_W*LOW_H);
+
+      for (let y=0, i=0, p=0; y<LOW_H; y++){
+        for (let x=0; x<LOW_W; x++, i++){
+          const r = img[p++], g = img[p++], b = img[p++]; p++; // skip a
+          const gray = (r*0.299 + g*0.587 + b*0.114)|0;
+          const d = Math.abs(gray - prevGray[i]);
+          prevGray[i] = gray;
+          if (d > DIFF_T){
+            const w = d;           // 가중치 = 차이 크기
+            sx += (x - LOW_W/2) * w;
+            sy += (y - LOW_H/2) * w;
+            mass += w;
           }
         }
-        t=(t+1)%4;
-        pumpId = requestAnimationFrame(pump);
-      };
-      if(!pumpId) pumpId = requestAnimationFrame(pump);
-      keepAwakeVid.play()
-        .then(()=> setBadge('video-fallback'))
-        .catch(()=> setBadge('video-fallback(wait)'));
-    }catch(e){
-      setBadge('fallback-error');
-    }
-  }
-  function stopVideoFallback(){
-    if (pumpId){ cancelAnimationFrame(pumpId); pumpId=null; }
-    if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-    if (keepAwakeVid){
-      try{ keepAwakeVid.pause(); keepAwakeVid.removeAttribute('src'); }catch(_){}
-      keepAwakeVid.srcObject = null;
-    }
-    canvas = null; ctx = null;
-  }
+      }
 
-  async function acquireWakeLock(){
-    try{
-      if ('wakeLock' in navigator){
-        if (!wakeLock || (wakeLock.released ?? false)){
-          wakeLock = await navigator.wakeLock.request('screen');
-          wakeLock.addEventListener?.('release', ()=>{ setBadge('released'); wakeLock=null; });
-          setBadge('active');
+      if (!pointerActive){ // 터치 중이면 무시
+        if (mass > MASS_T){
+          // 방향 벡터(전면 카메라 거울효과 보정: x 반전)
+          let nx = -(sx / mass) / (LOW_W/2);
+          let ny =  (sy / mass) / (LOW_H/2);
+          // 데드존 & 클램프
+          const dead = 0.06;
+          nx = Math.abs(nx) < dead ? 0 : nx;
+          ny = Math.abs(ny) < dead ? 0 : ny;
+          // 타깃으로 반영(스무딩은 rAF에서)
+          target.x = clamp1(nx*1.2);   // 감도계수 1.2
+          target.y = clamp1(ny*1.2);
+        }else{
+          // 모션 없으면 천천히 가운데로
+          target.x *= 0.985;
+          target.y *= 0.985;
         }
-      }else{
-        setBadge('unavailable');
       }
-    }catch(err){
-      setBadge('error'); wakeLock = null;
-    }
-  }
-  async function releaseWakeLock(){
-    try{ await wakeLock?.release(); }catch(_){}
-    finally { wakeLock = null; setBadge('off'); }
-  }
 
-  // 페이지가 가려졌다가 돌아오면 재요청
-  document.addEventListener('visibilitychange', ()=>{
-    if (!document.hidden && document.fullscreenElement){
-      acquireWakeLock();
-      keepAwakeVid && keepAwakeVid.play().catch(()=>{});
-    }
-  });
-
-  // 주기적으로 재획득 + 폴백 재생 유지
-  function startWatchdog(){
-    clearInterval(wlWatchdog);
-    wlWatchdog = setInterval(()=>{
-      if (!document.fullscreenElement) return;
-      acquireWakeLock();
-      if (keepAwakeVid && keepAwakeVid.paused){
-        keepAwakeVid.play().catch(()=>{});
-      }
-    }, 30000); // 30초 간격
-  }
-  function stopWatchdog(){
-    clearInterval(wlWatchdog); wlWatchdog = null;
+      motionRAF = requestAnimationFrame(step);
+    };
+    motionRAF = requestAnimationFrame(step);
   }
 
   /* ===== 전체화면 토글 & 더블탭 종료 ===== */
@@ -255,13 +274,11 @@
     fsBtn.classList.toggle('hidden', fs);
 
     if (fs){
-      acquireWakeLock();
-      startWatchdog();
-      startVideoFallback(); // 웨이크락과 동시에 폴백도 켬
+      // 전체화면 진입 시 카메라 추적 시도(권한 팝업)
+      startCamFollow();
     }else{
-      stopWatchdog();
-      releaseWakeLock();
-      stopVideoFallback();
+      // 전체화면 종료 시 카메라 정지(배터리 절약)
+      stopCamFollow();
     }
   }
   fsBtn.addEventListener('click', async ()=>{
@@ -272,34 +289,27 @@
   });
   document.addEventListener('fullscreenchange', onFSChange);
 
-  // 더블클릭(데스크톱/안드)로 종료
-  addEventListener('dblclick', async ()=>{
-    if(!inFS()) return;
-    try{ await document.exitFullscreen(); }catch(_){}
-  });
+  // 더블클릭/더블탭으로 전체화면 종료
+  addEventListener('dblclick', async ()=>{ if(inFS()) try{ await document.exitFullscreen(); }catch(_){}});
 
-  // 더블탭 폴백 + 탭마다 깜빡
   let lastTap=0; const GAP=300;
   addEventListener('pointerup', async (e)=>{
-    // 깜빡 연출
+    // 재미용 깜빡
     eyes.forEach(el=>{
       el.classList.add('blink');
       setTimeout(()=>el.classList.remove('blink'),
         parseFloat(getComputedStyle(root).getPropertyValue('--blink-speed')) + 40);
     });
-    // 비디오 폴백 재시도(일부 기기는 제스처 뒤에만 재생 허용)
-    if (document.fullscreenElement){
-      keepAwakeVid && keepAwakeVid.play().catch(()=>{});
-    }
-
     if(!inFS()) return;
     const now = e.timeStamp||Date.now();
-    if(now-lastTap<=GAP){
-      try{ await document.exitFullscreen(); }catch(_){}
-      lastTap=0;
-    }else{
-      lastTap=now;
-    }
+    if(now-lastTap<=GAP){ try{ await document.exitFullscreen(); }catch(_){} lastTap=0; }
+    else lastTap=now;
+  });
+
+  // 백그라운드/복귀 처리
+  document.addEventListener('visibilitychange', ()=>{
+    if (document.hidden) stopCamFollow();
+    else if (inFS()) startCamFollow();
   });
 })();
 </script>
