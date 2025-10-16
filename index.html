@@ -70,7 +70,7 @@
     background:#f3f4f6; color:#111827; cursor:pointer;
     user-select:none;
   }
-  .btn.small{ /* 카메라 창 안의 소형 버튼 */
+  .btn.small{
     height: calc(var(--btnH) * var(--uiScale) * .85);
     padding: 0 calc(10px * var(--uiScale));
     font-size: calc(12px * var(--uiScale));
@@ -142,7 +142,7 @@
     box-shadow:0 0 0 2px rgba(0,0,0,.25), 0 0 18px rgba(0,255,220,.35);
     pointer-events:none; z-index:2; opacity:.15; transition: opacity .2s linear;
   }
-  /* ★ 추가: 색상 읽기 표시 (캠 화면 아래쪽 중앙) */
+  /* 색상 읽기 표시 (캠 화면 아래쪽 중앙) */
   #colorReadout{
     position:absolute; left:50%; transform:translateX(-50%);
     bottom:12px; z-index:2; display:inline-flex; align-items:center; gap:.55rem;
@@ -210,24 +210,8 @@
   body.panel-collapsed #right{ display:none; }
   body.panel-collapsed #left{ flex:1 1 100%; }
 
-  /* 실행용 전체화면 오버레이(마크업은 유지, 사용 안 함) */
-  #playOverlay{
-    position:fixed; inset:0; background:#0b0f14; color:#fff;
-    display:none; flex-direction:column; z-index:10000;
-  }
-  #playOverlay.show{ display:flex; }
-  #playOverlay .topbar{
-    height:56px; display:flex; align-items:center; justify-content:flex-end;
-    padding: 10px 14px; border-bottom:1px solid #1f2937; background:#0b0f14;
-  }
-  #playOverlay .body{
-    flex:1 1 auto; display:flex; align-items:center; justify-content:center; overflow:auto;
-    padding: 20px;
-  }
-  #overlayClose{
-    background:#ef4444; color:#fff; border:0; border-radius:10px; padding:10px 16px; font-weight:800; cursor:pointer;
-    box-shadow:0 2px 8px rgba(0,0,0,.2);
-  }
+  /* 실행용 전체화면 오버레이(마크업만 유지, 사용 안 함) */
+  #playOverlay{ position:fixed; inset:0; background:#0b0f14; color:#fff; display:none; z-index:10000; }
 </style>
 </head>
 <body>
@@ -257,14 +241,14 @@
     <div id="right">
       <!-- 우측 상단: 카메라 프리뷰 -->
       <div id="rightTop">
-        <div class="camWrap">
+        <div class="camWrap" id="camWrap">
           <video id="camVideo" playsinline autoplay muted></video>
           <div id="focusBox"></div>
           <div class="camUi">
             <span id="camBadge" class="camBadge">Cam: off</span>
             <button id="camToggle" class="btn small">캠 켜기</button>
           </div>
-          <!-- ★ 추가: 인식 색상 표시 -->
+          <!-- 인식 색상 표시 -->
           <div id="colorReadout"><span class="dot"></span><span class="label">색없음</span></div>
         </div>
       </div>
@@ -279,7 +263,6 @@
   <!-- 툴박스 -->
   <xml id="toolbox" style="display:none">
     <category name="이벤트" colour="#f59e0b">
-      <!-- 드롭다운으로 색 선택 -->
       <block type="xrobo_start"></block>
     </category>
 
@@ -314,11 +297,8 @@
     </category>
   </xml>
 
-  <!-- 실행용 전체화면 오버레이 (사용하지 않지만 유지) -->
-  <div id="playOverlay" aria-hidden="true">
-    <div class="topbar"><button id="overlayClose">종료</button></div>
-    <div class="body"></div>
-  </div>
+  <!-- (미사용) 전체화면 오버레이 -->
+  <div id="playOverlay" aria-hidden="true"></div>
 
 <script>
 /* ================= Blockly 기본 설정 ================= */
@@ -383,7 +363,7 @@ var PINS_OUT=[["OUT1","OUT1"],["OUT2","OUT2"],["OUT3","OUT3"],["OUT4","OUT4"],["
 var SPEEDS=Array.from({length:41},(_,i)=>20-i).map(v=>[String(v),String(v)]);
 var TIMES100=Array.from({length:10},(_,i)=>100*(i+1)).map(v=>[String(v),String(v)]);
 var LED_TGT=[].concat(PINS_OUT,[["CPU","CPU"]]);
-var LED_MODE=[["밝기","BRIGHT"],["숨쉬기","BREATHE"]];
+var LED_MODE=[["밝기","BRIGHT"],["숨쉬기","BREATHE"]]);
 var LED_VALS=Array.from({length:20},(_,i)=>[String(i),String(i)]);
 
 /* ================= 블록 정의 ================= */
@@ -457,8 +437,6 @@ function normalizeProgram(list){
   }
   return out;
 }
-
-/* 드롭다운 색별 프로그램 테이블 빌드 */
 function buildEventPrograms(){
   const programs = { RED:[], ORG:[], YEL:[], GRN:[], BLU:[], VIO:[] };
   var evs = ws.getBlocksByType('xrobo_start', true);
@@ -507,17 +485,16 @@ function resetBleRefs(){ bleDevice=null; bleServer=null; bleService=null; writeC
 function setConnected(v){
   isConnected=v;
   btnConnect.textContent=v?'해제':'연결';
-  btnRun.disabled=false; /* BLE 없어도 실행 가능 */
+  btnRun.disabled=false;
   dot.classList.toggle('on',v); dot.classList.toggle('off',!v);
   dot.textContent=v?'on':'off';
   if(!v) setRunning(false);
 }
-/* ★ 변경: 실행해도 전체화면 오버레이를 띄우지 않음 */
+/* 전체화면 오버레이 사용 안 함 */
 function setRunning(v){
   isRunning=v;
   btnRun.textContent=v?'■ 정지':'▶ 실행';
   btnRun.style.background = v ? '#ef4444' : '#16a34a';
-  /* 오버레이 토글 제거 */
 }
 
 function connectBLE(){
@@ -694,10 +671,7 @@ fsBtn.onclick=async function(){ if(document.fullscreenElement) await exitFS(); e
 document.addEventListener('fullscreenchange', syncFSLabel);
 syncFSLabel();
 
-/* ================= 실행(오버레이) 및 이벤트 실행기 ================= */
-var overlay=document.getElementById('playOverlay');
-var overlayClose=document.getElementById('overlayClose');
-
+/* ================= 실행 큐 & 이벤트 실행기 ================= */
 var eventPrograms = {};
 var queue = [];
 var queueBusy = false;
@@ -737,10 +711,9 @@ function triggerEvent(name){
     processQueue(myToken);
   }
 }
-
 btnRun.onclick = function(){
   if(!isRunning){
-    eventPrograms = buildEventPrograms();   // 색별 프로그램 테이블 구성
+    eventPrograms = buildEventPrograms();
     cancelToken++; queue = [];
     setRunning(true);
   }else{
@@ -749,21 +722,17 @@ btnRun.onclick = function(){
     try{ if(writeChar) writeChar.writeValue(enc('S\n')); }catch(e){}
   }
 };
-overlayClose && (overlayClose.onclick = function(){ if(isRunning) btnRun.click(); });
-overlay && overlay.addEventListener('keydown', function(e){ if(e.key==='Escape' && isRunning) btnRun.click(); });
 
-/* ================= 카메라: 프리뷰 + 색 감지 + 움직임 초점 ================= */
-/* 색상 분류: RED/ORG/YEL/GRN/BLU/VIO */
-const camVideo = $('camVideo');
-const camToggle = $('camToggle');
-const camBadge  = $('camBadge');
-const focusBox  = $('focusBox');
-/* ★ 추가: 색상 리드아웃 요소 */
-const colorReadout = $('colorReadout');
-const colorDot = colorReadout.querySelector('.dot');
-const colorLabel = colorReadout.querySelector('.label');
+/* ================= 카메라: 박스(ROI) 내부만 색 인식 + 움직임 초점 ================= */
+const camWrap   = document.getElementById('camWrap');
+const camVideo  = document.getElementById('camVideo');
+const camToggle = document.getElementById('camToggle');
+const camBadge  = document.getElementById('camBadge');
+const focusBox  = document.getElementById('focusBox');
+const colorReadout = document.getElementById('colorReadout');
+const colorDot  = colorReadout.querySelector('.dot');
+const colorLabel= colorReadout.querySelector('.label');
 
-/* 표기용 매핑 */
 const NAME_KR = { RED:'빨간색', ORG:'주황색', YEL:'노란색', GRN:'초록색', BLU:'파랑색', VIO:'보라색', NONE:'색없음' };
 const HUE_MAP = { RED:0, ORG:28, YEL:55, GRN:120, BLU:210, VIO:285 };
 function updateColorReadout(code){
@@ -778,22 +747,24 @@ function updateColorReadout(code){
 
 let camStream = null, camOn = false, camRAF = null;
 
-/* 처리 파라미터 (필요 시 조정) */
-const LOW_W = 64, LOW_H = 48;        // 다운샘플 크기
-const S_MIN = 0.35;                   // 채도 컷(조명 영향 완화)
-const V_MIN = 0.20;                   // 명도 컷
-const COLOR_TOTAL_MIN = 1200;         // 색 판정에 필요한 최소 가중치
-const CONF_MIN = 0.55;                // 최상위 색 비율 임계 (애매하면 무시)
-const HOLD_MS = 250;                  // 색 변경 디바운스
+/* ROI/색 판정 파라미터 */
+const LOW_W = 64, LOW_H = 48;            // 처리 해상도
+const S_MIN = 0.35, V_MIN = 0.20;        // HSV 컷
+const CONF_MIN = 0.55;                   // 탑 색 비율
+const HOLD_MS = 250;                     // 색 변경 디바운스
 
-const MASS_MIN = 12000;               // 움직임 감지 임계
-const FOCUS_LERP = 0.20;              // 초점 이동 스무딩
+const MASS_MIN = 12000;                  // 모션 총량 임계(초점 박스 표시용)
+const FOCUS_LERP = 0.20;                 // 초점 이동 스무딩
+
+/* ROI 가중치 임계: ROI 픽셀 수 × 계수 (환경에 맞게 0.18~0.35 사이 조정) */
+const ROI_MIN_WEIGHT_PER_PIXEL = 0.22;
+const ROI_MIN_WEIGHT_FLOOR = 30;         // 너무 작은 박스 대비 바닥값
 
 const procCvs = document.createElement('canvas');
 const procCtx = procCvs.getContext('2d', { willReadFrequently:true });
 procCvs.width = LOW_W; procCvs.height = LOW_H;
 
-/* 색상 헬퍼 */
+/* 유틸: RGB→HSV, Hue→카테고리 */
 function rgb2hsv(r,g,b){
   r/=255; g/=255; b/=255;
   const max=Math.max(r,g,b), min=Math.min(r,g,b);
@@ -810,7 +781,6 @@ function rgb2hsv(r,g,b){
   }
   return {h,s,v};
 }
-/* Hue → 6색 카테고리 */
 function hueToCat(h){
   if (h < 15 || h >= 345) return 'RED';
   if (h < 40)  return 'ORG';
@@ -820,14 +790,9 @@ function hueToCat(h){
   return 'VIO';
 }
 
-/* 색 변화 안정화 상태 */
-let activeColor = null;
-let candColor   = null;
-let candSince   = 0;
-
-/* 초점 위치 (0..1), 비디오는 거울(좌우 반전) */
-let fx=0.5, fy=0.5;          // 현재
-let fxT=0.5, fyT=0.5;        // 목표
+/* 상태 */
+let activeColor = null, candColor = null, candSince = 0;
+let fx=0.5, fy=0.5, fxT=0.5, fyT=0.5;     // 박스 중심 (정규화), 좌우는 거울 좌표
 
 function updateCamUi(){
   camBadge.textContent = 'Cam: ' + (camOn ? 'on' : 'off');
@@ -844,8 +809,8 @@ async function startCam(){
     camVideo.srcObject = stream;
     await camVideo.play();
     camOn = true; updateCamUi();
-    startDetectLoop();
     updateColorReadout('NONE');
+    startDetectLoop();
     log('🎥 카메라 켜짐');
   }catch(e){
     log('❌ 카메라 실패: '+e);
@@ -860,87 +825,101 @@ function stopCam(){
   }
   camStream = null; camOn=false; updateCamUi();
   if(camRAF){ cancelAnimationFrame(camRAF); camRAF=null; }
-  // 상태 리셋
-  activeColor=null; candColor=null; candSince=0;
-  fx=fy=fxT=fyT=0.5; focusBox.style.left='50%'; focusBox.style.top='50%'; focusBox.style.opacity='.15';
-  updateColorReadout('NONE'); /* ★ 리드아웃 리셋 */
+  activeColor=candColor=null; candSince=0;
+  fx=fy=fxT=fyT=0.5;
+  focusBox.style.left='50%'; focusBox.style.top='50%'; focusBox.style.opacity='.15';
+  updateColorReadout('NONE');
   log('🛑 카메라 꺼짐');
 }
 camToggle.onclick = ()=> camOn ? stopCam() : startCam();
 
+/* 박스(ROI) 내부만 색 인식 */
 function startDetectLoop(){
   const step = ()=>{
     if(!camOn || camVideo.readyState < 2){ camRAF = requestAnimationFrame(step); return; }
 
+    // 프레임 캡처
     procCtx.drawImage(camVideo, 0, 0, LOW_W, LOW_H);
-    const data = procCtx.getImageData(0,0,LOW_W,LOW_H).data;
+    const img = procCtx.getImageData(0,0,LOW_W,LOW_H);
+    const data = img.data;
 
-    // 1) 움직임(프레임간 차) + 2) 색 가중치 동시 계산
+    // 1) 모션(전체 프레임)으로 초점 위치 추정
     if (!step.prevGray) step.prevGray = new Uint8ClampedArray(LOW_W*LOW_H);
-    let mass=0, sx=0, sy=0;
-
-    // 색 누적 가중치
-    const acc = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
-
+    let mass=0, sxa=0, sya=0;
     for(let y=0, i=0, p=0; y<LOW_H; y++){
       for(let x=0; x<LOW_W; x++, i++){
-        const r = data[p++], g = data[p++], b = data[p++]; p++; // a skip
-        // 움직임(그레이 차)
+        const r=data[p++], g=data[p++], b=data[p++]; p++; // a skip
         const gray = (r*0.299 + g*0.587 + b*0.114)|0;
         const d = Math.abs(gray - step.prevGray[i]);
         step.prevGray[i] = gray;
-        if (d>0){ // 무게중심
-          sx += x * d; sy += y * d; mass += d;
-        }
-        // 색 추정 (HSV 컷)
-        const {h,s,v} = rgb2hsv(r,g,b);
-        if (s > S_MIN && v > V_MIN){
-          const w = Math.pow(s,1.3) * (0.6 + 0.4*v); // 채도 가중 + 약간의 명도 가중
-          acc[hueToCat(h)] += w;
-        }
+        if (d>0){ sxa += x*d; sya += y*d; mass += d; }
       }
     }
-
-    // ── 움직임 초점 박스 이동 ──
     if (mass > MASS_MIN){
-      const cx = sx / mass;
-      const cy = sy / mass;
-      fxT = 1 - (cx / (LOW_W-1));
-      fyT =     (cy / (LOW_H-1));
+      const cx = sxa / mass, cy = sya / mass;
+      fxT = 1 - (cx / (LOW_W-1));   // 거울 좌표
+      fyT =      (cy / (LOW_H-1));
       focusBox.style.opacity = '1';
     }else{
       focusBox.style.opacity = '.15';
     }
-    // rAF 스무딩
-    fx = fx + (fxT-fx)*FOCUS_LERP;
-    fy = fy + (fyT-fy)*FOCUS_LERP;
+    // 스무딩 후 화면 박스 이동
+    fx += (fxT-fx)*FOCUS_LERP;
+    fy += (fyT-fy)*FOCUS_LERP;
     focusBox.style.left = (fx*100).toFixed(1)+'%';
     focusBox.style.top  = (fy*100).toFixed(1)+'%';
 
-    // ── 색 판정 → 해당 색 이벤트 트리거(디바운스) + 리드아웃 ──
-    const totalW = acc.RED+acc.ORG+acc.YEL+acc.GRN+acc.BLU+acc.VIO;
-    if (totalW > COLOR_TOTAL_MIN){
+    // 2) ROI(박스) 영역 계산: DOM 실제 크기 → 샘플 캔버스 좌표로 매핑
+    const cw = camWrap.clientWidth  || 1;
+    const ch = camWrap.clientHeight || 1;
+    const bw = focusBox.clientWidth || 0;
+    const bh = focusBox.clientHeight|| 0;
+    const wFrac = Math.min(1, Math.max(0.01, bw / cw));
+    const hFrac = Math.min(1, Math.max(0.01, bh / ch));
+    const halfWpx = Math.max(1, Math.round(wFrac * LOW_W / 2));
+    const halfHpx = Math.max(1, Math.round(hFrac * LOW_H / 2));
+    const cxPix   = Math.round((1 - fx) * (LOW_W - 1)); // 거울→캔버스 좌표
+    const cyPix   = Math.round(fy * (LOW_H - 1));
+
+    const x0 = Math.max(0, cxPix - halfWpx);
+    const y0 = Math.max(0, cyPix - halfHpx);
+    const x1 = Math.min(LOW_W-1, cxPix + halfWpx);
+    const y1 = Math.min(LOW_H-1, cyPix + halfHpx);
+    const roiPixels = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1));
+
+    // 3) 색 누적(박스 내부만)
+    const acc = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
+    let totalW = 0;
+    for(let y=y0; y<=y1; y++){
+      let p = (y * LOW_W + x0) * 4;
+      for(let x=x0; x<=x1; x++, p+=4){
+        const r=data[p], g=data[p+1], b=data[p+2];
+        const {h,s,v} = rgb2hsv(r,g,b);
+        if (s > S_MIN && v > V_MIN){
+          const w = Math.pow(s,1.3) * (0.6 + 0.4*v);
+          const cat = hueToCat(h);
+          acc[cat] += w; totalW += w;
+        }
+      }
+    }
+
+    // 4) ROI 기반 동적 임계 + 디바운스 + 이벤트/표시
+    const WEIGHT_MIN = Math.max(ROI_MIN_WEIGHT_FLOOR, roiPixels * ROI_MIN_WEIGHT_PER_PIXEL);
+    let frameColor = null;
+    if (totalW > WEIGHT_MIN){
       let top='RED', topW=-1;
       for(const k in acc){ if(acc[k] > topW){ topW=acc[k]; top=k; } }
       const conf = topW / totalW;
+      if (conf >= CONF_MIN) frameColor = top;
+    }
 
-      const now = performance.now();
-      if (conf >= CONF_MIN){
-        if (candColor !== top){ candColor = top; candSince = now; }
-        if (activeColor !== top && (now - candSince) >= HOLD_MS){
-          activeColor = top;
-          updateColorReadout(top);          /* ★ 리드아웃 갱신 */
-          log('🎯 색 감지: ' + top + ' (이벤트 실행)');
-          triggerEvent(top);
-        }
-      }
-      // conf가 낮으면 표시 유지(직전 확정 색 유지)
-    }else{
-      // 색상이 사라진 경우 표시를 '색없음'으로 전환
-      if (activeColor !== null){
-        activeColor = null; candColor = null;
-        updateColorReadout('NONE');         /* ★ 리드아웃 갱신 */
-      }
+    const now = performance.now();
+    if (candColor !== frameColor){ candColor = frameColor; candSince = now; }
+    if ((now - candSince) >= HOLD_MS && activeColor !== frameColor){
+      activeColor = frameColor;
+      updateColorReadout(activeColor || 'NONE');
+      if (activeColor){ log('🎯 색 감지(ROI): '+activeColor+' (이벤트 실행)'); triggerEvent(activeColor); }
+      else { log('◽ 색없음(ROI)'); }
     }
 
     camRAF = requestAnimationFrame(step);
@@ -948,7 +927,8 @@ function startDetectLoop(){
   camRAF = requestAnimationFrame(step);
 }
 
-/* ================= 끝 ================= */
+/* 캠 버튼 */
+camToggle.onclick = ()=> camOn ? stopCam() : startCam();
 </script>
 </body>
 </html>
