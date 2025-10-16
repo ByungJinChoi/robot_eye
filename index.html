@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-<title>Robot Eyes (WakeLock + Video Fallback)</title>
+<title>Robot Eyes (Stable + KeepAwake)</title>
 <style>
   :root{
     --eye-gap: 8vmin;          /* 세로 기준 간격 */
-    --eye-size: 42vmin;        /* 세로 기준 눈 크기 */
+    --eye-size: 42vmin;        /* 세로 기준 크기 */
     --pupil-size: 16vmin;
     --blink-speed: 180ms;
     --bg: #000;
   }
-  html, body{ height:100%; margin:0; background:var(--bg);
-    touch-action:none; overscroll-behavior:contain; -webkit-tap-highlight-color:transparent; }
-
-  /* 가로(landscape): 눈 1.5배, 간격 2배 */
+  html, body{
+    height:100%; margin:0; background:var(--bg);
+    touch-action:none; overscroll-behavior:contain; -webkit-tap-highlight-color:transparent;
+  }
+  /* 가로: 눈 1.5배, 간격 2배 */
   @media (orientation: landscape){
     :root{
       --eye-size: calc(42vmin * 1.5);
@@ -39,12 +40,18 @@
   #fsBtn.hidden{ display:none; }
   #fsBtn:active{ transform: translateY(1px); }
 
-  /* 좌상단 상태배지(선택) */
+  /* 좌상단 Wake Lock 상태 배지(선택) */
   #wlStatus{
     position: fixed; top:12px; left:12px; z-index:10;
     font:600 12px system-ui; color:#fff; padding:.35rem .6rem;
     border:1px solid rgba(255,255,255,.3); border-radius:999px;
     background:rgba(0,0,0,.35); backdrop-filter:blur(6px)
+  }
+
+  /* 비디오 폴백: 화면 안(좌하단)에 1×1로 존재, 완전히 투명 X(일부 기기에서 off-screen/완전투명 시 스로틀) */
+  video#keepAwake{
+    position: fixed; left:0; bottom:0; width:1px; height:1px;
+    opacity: 0.01; pointer-events:none; z-index:0;
   }
 
   .face{ height:100%; display:grid; place-items:center; }
@@ -58,7 +65,8 @@
   .pupil{
     position:absolute; width:var(--pupil-size); height:var(--pupil-size);
     border-radius:50%; background: radial-gradient(circle at 40% 35%, #222 0 45%, #000 70%, #000 100%);
-    left:50%; top:50%; transform:translate(-50%,-50%); transition:transform 80ms ease; will-change: transform;
+    left:50%; top:50%; transform:translate(-50%,-50%);
+    will-change: transform;
   }
   .shine{
     position:absolute; width: calc(var(--pupil-size)*.35); height: calc(var(--pupil-size)*.35);
@@ -71,21 +79,15 @@
   .eyelid{ position:absolute; inset:0; background:var(--bg); transform-origin:top center; transform:scaleY(0); pointer-events:none; }
   .blink .eyelid{ animation: blink var(--blink-speed) ease-in-out forwards; }
   @keyframes blink{ 0%{transform:scaleY(0)} 45%{transform:scaleY(1)} 100%{transform:scaleY(0)} }
-
-  /* 폴백용 비디오: 화면에 보이지 않게 */
-  video#keepAwake{
-    position: fixed; width:1px; height:1px; opacity:0; pointer-events:none; left:-9999px; top:-9999px;
-  }
 </style>
 </head>
 <body>
   <button id="fsBtn">전체화면</button>
   <div id="wlStatus">WakeLock: init</div>
 
-  <!-- 폴백: 무음/자동재생/루프용 초저해상도 비디오 -->
-  <video id="keepAwake" playsinline muted loop preload="auto">
-    <source src="data:video/mp4;base64,AAAAIGZ0eXBtcDQyAAAAAG1wNDFtcDQxaXNvbWF2YzEAAAAIZnJlZQA=" type="video/mp4">
-  </video>
+  <!-- 캔버스 스트림 → 1×1 비디오로 재생(폴백용) -->
+  <video id="keepAwake" playsinline muted loop preload="auto"
+         controlslist="nodownload nofullscreen noplaybackrate" disablepictureinpicture></video>
 
   <div class="face" id="face">
     <div class="eyes">
@@ -105,7 +107,7 @@
 
   const setBadge = (t)=> wlBadge && (wlBadge.textContent = 'WakeLock: ' + t);
 
-  /* ===== 깜빡임 ===== */
+  /* ========== 깜빡임 ========== */
   (function scheduleBlink(){
     const t = 2200 + Math.random()*3300;
     setTimeout(() => {
@@ -118,45 +120,69 @@
     }, t);
   })();
 
-  /* ===== 시선 추적 ===== */
-  const clamp = (dx,dy,limit)=> {
-    const d = Math.hypot(dx,dy); if (d<=limit) return {x:dx, y:dy};
-    const r = limit/d; return {x:dx*r, y:dy*r};
-  };
-  function move(nx, ny){
-    eyes.forEach((eye,i)=>{
+  /* ========== 입력 스무딩 & 소스 우선순위 ========== */
+  // - pointer가 활성화되어 있을 때는 자이로 무시 (충돌/떨림 방지)
+  // - rAF 보간(lerp)로 부드럽게 이동
+  let target = {x:0, y:0};
+  let current = {x:0, y:0};
+  const clamp1 = v => Math.max(-1, Math.min(1, v));
+  const lerp = (a,b,t)=> a + (b-a)*t;
+  function movePupils(nx, ny){
+    eyes.forEach((eye, i) => {
       const rect = eye.getBoundingClientRect();
-      const r = Math.min(rect.width, rect.height)/2;
-      const lim = r*0.32;
-      const p = clamp(nx*lim, ny*lim, lim);
-      pupils[i].style.transform = `translate(calc(-50% + ${p.x}px), calc(-50% + ${p.y}px))`;
+      const rEye = Math.min(rect.width, rect.height)/2;
+      const limit = rEye * 0.32;
+      const dx = nx * limit, dy = ny * limit;
+      const dist = Math.hypot(dx,dy);
+      const r = dist>limit ? (limit/dist) : 1;
+      pupils[i].style.transform =
+        `translate(calc(-50% + ${dx*r}px), calc(-50% + ${dy*r}px))`;
     });
   }
-  function onPointer(e){
+  function tick(){
+    // 스무딩 강도: 0.18 (값이 클수록 빠르게 따라감)
+    current.x = lerp(current.x, target.x, 0.18);
+    current.y = lerp(current.y, target.y, 0.18);
+    movePupils(current.x, current.y);
+    requestAnimationFrame(tick);
+  }
+  tick();
+
+  let pointerActive = false;
+  let pointerIdleTimer = null;
+  function setTarget(nx, ny){ target.x = clamp1(nx); target.y = clamp1(ny); }
+
+  function handlePointer(e){
     const pt = ('touches' in e) ? e.touches[0] : e;
     const cx = innerWidth/2, cy = innerHeight/2;
     const dx = pt.clientX - cx, dy = pt.clientY - cy;
     const d = Math.hypot(innerWidth, innerHeight) || 1;
-    move(Math.max(-1, Math.min(1, dx/(d*0.25))), Math.max(-1, Math.min(1, dy/(d*0.25))));
+    setTarget(dx/(d*0.25), dy/(d*0.25));
+    pointerActive = true;
+    clearTimeout(pointerIdleTimer);
+    pointerIdleTimer = setTimeout(()=> { pointerActive = false; }, 1200);
   }
-  addEventListener('pointermove', onPointer, {passive:true});
-  addEventListener('pointerdown', onPointer, {passive:true});
-  addEventListener('deviceorientation', e=>{
-    const {beta, gamma} = e; if (beta==null || gamma==null) return;
-    move(Math.max(-1, Math.min(1, gamma/30)), Math.max(-1, Math.min(1, beta/30)));
-  }, true);
-  addEventListener('resize', ()=>move(0,0));
-  move(0,0);
+  addEventListener('pointermove', handlePointer, {passive:true});
+  addEventListener('pointerdown', handlePointer, {passive:true});
 
-  /* ===== Wake Lock + 비디오 폴백 ===== */
+  addEventListener('deviceorientation', e=>{
+    if (pointerActive) return; // 포인터 우선
+    const {beta, gamma} = e; if (beta==null || gamma==null) return;
+    setTarget(gamma/30, beta/30);
+  }, true);
+
+  addEventListener('resize', ()=>{ setTarget(0,0); });
+
+  /* ========== Wake Lock + “캔버스 비디오” 폴백 ========== */
   let wakeLock = null;
+  let canvas, ctx, stream, rafId = null;
+
   async function requestWakeLock(){
     try{
       if ('wakeLock' in navigator && !wakeLock){
         wakeLock = await navigator.wakeLock.request('screen');
         wakeLock.addEventListener?.('release', ()=>{ wakeLock = null; setBadge('released'); });
         setBadge('active');
-        // 폴백 비디오는 정지
         stopVideoFallback();
       }else if(!('wakeLock' in navigator)){
         setBadge('unavailable');
@@ -174,28 +200,51 @@
     finally { wakeLock = null; setBadge('off'); stopVideoFallback(); }
   }
 
-  async function startVideoFallback(){
-    if (!keepAwakeVid) return;
+  function startVideoFallback(){
     try{
-      // 오토플레이는 사용자 제스처 이후에만 안정적. 전체화면 버튼 클릭/더블탭 이후 시도됨.
-      await keepAwakeVid.play();
-      setBadge('video-fallback');
+      if (!('captureStream' in HTMLCanvasElement.prototype)) {
+        setBadge('fallback-unsupported');
+        return;
+      }
+      if (!canvas){
+        canvas = document.createElement('canvas');
+        canvas.width = 2; canvas.height = 2;
+        ctx = canvas.getContext('2d');
+        stream = canvas.captureStream(1); // 1fps면 충분
+        keepAwakeVid.srcObject = stream;
+      }
+      const pump = ()=>{
+        // 프레임이 실제로 발생하도록 1px 토글 그리기
+        if(!ctx) return;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0,0,2,2);
+        rafId = requestAnimationFrame(pump);
+      };
+      if(!rafId) rafId = requestAnimationFrame(pump);
+      keepAwakeVid.play().then(()=> setBadge('video-fallback'))
+                         .catch(()=> setBadge('video-fallback(wait)'));
     }catch(e){
-      // 어떤 기기는 무음이라도 즉시 재생 불가 → 이후 제스처마다 재시도
-      setBadge('video-fallback(wait)');
+      setBadge('fallback-error');
     }
   }
   function stopVideoFallback(){
-    if (!keepAwakeVid) return;
-    try{ keepAwakeVid.pause(); keepAwakeVid.currentTime = 0; }catch(_){}
+    if (rafId){ cancelAnimationFrame(rafId); rafId = null; }
+    if (keepAwakeVid){
+      try{ keepAwakeVid.pause(); keepAwakeVid.removeAttribute('src'); }catch(_){}
+      keepAwakeVid.srcObject = null;
+    }
+    if (stream){
+      stream.getTracks().forEach(t=>t.stop());
+      stream = null; ctx = null; canvas = null;
+    }
   }
 
-  // 앱 전환 등으로 가려졌다가 다시 보이면 재요청
+  // 앱이 가렸다가(알림/앱전환) 돌아오면 재요청
   document.addEventListener('visibilitychange', ()=>{
     if (!document.hidden && document.fullscreenElement) requestWakeLock();
   });
 
-  /* ===== 전체화면 토글 & 더블탭 종료 ===== */
+  /* ========== 전체화면 토글 & 더블탭 종료 ========== */
   const inFS = ()=> !!document.fullscreenElement;
   function onFSChange(){
     const fs = inFS();
@@ -217,10 +266,10 @@
     try{ await document.exitFullscreen(); }catch(_){}
   });
 
-  // 더블탭 폴백
+  // 더블탭 폴백 + 탭마다 깜빡
   let lastTap=0; const GAP=300;
   addEventListener('pointerup', async (e)=>{
-    // 재미용 깜빡
+    // 깜빡 연출
     eyes.forEach(el=>{
       el.classList.add('blink');
       setTimeout(()=>el.classList.remove('blink'),
