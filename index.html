@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Robot Eyes (WakeLock + Video Fallback)</title>
+<style>
+  :root{
+    --eye-gap: 8vmin;          /* 세로 기준 간격 */
+    --eye-size: 42vmin;        /* 세로 기준 눈 크기 */
+    --pupil-size: 16vmin;
+    --blink-speed: 180ms;
+    --bg: #000;
+  }
+  html, body{ height:100%; margin:0; background:var(--bg);
+    touch-action:none; overscroll-behavior:contain; -webkit-tap-highlight-color:transparent; }
+
+  /* 가로(landscape): 눈 1.5배, 간격 2배 */
+  @media (orientation: landscape){
+    :root{
+      --eye-size: calc(42vmin * 1.5);
+      --pupil-size: calc(16vmin * 1.5);
+      --eye-gap: calc(8vmin * 2);
+    }
+  }
+
+  /* 우상단 전체화면 버튼 */
+  #fsBtn{
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    z-index: 10;
+    font: 600 14px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: .6rem .9rem; border-radius: 999px;
+    border: 1px solid rgba(128,200,255,.6);
+    background: rgba(64,160,255,.22); color:#fff;
+    backdrop-filter: blur(6px); cursor: pointer;
+  }
+  #fsBtn.hidden{ display:none; }
+  #fsBtn:active{ transform: translateY(1px); }
+
+  /* 좌상단 상태배지(선택) */
+  #wlStatus{
+    position: fixed; top:12px; left:12px; z-index:10;
+    font:600 12px system-ui; color:#fff; padding:.35rem .6rem;
+    border:1px solid rgba(255,255,255,.3); border-radius:999px;
+    background:rgba(0,0,0,.35); backdrop-filter:blur(6px)
+  }
+
+  .face{ height:100%; display:grid; place-items:center; }
+  .eyes{ display:grid; grid-auto-flow:column; align-items:center; gap:var(--eye-gap); }
+  .eye{
+    position:relative; width:var(--eye-size); height:var(--eye-size);
+    border-radius:50%; overflow:hidden;
+    background: radial-gradient(ellipse at 40% 40%, #fff 0 70%, #e9e9e9 100%);
+    box-shadow: 0 1.2vmin 3vmin rgba(0,0,0,.45), inset 0 -0.8vmin 1.6vmin rgba(0,0,0,.12);
+  }
+  .pupil{
+    position:absolute; width:var(--pupil-size); height:var(--pupil-size);
+    border-radius:50%; background: radial-gradient(circle at 40% 35%, #222 0 45%, #000 70%, #000 100%);
+    left:50%; top:50%; transform:translate(-50%,-50%); transition:transform 80ms ease; will-change: transform;
+  }
+  .shine{
+    position:absolute; width: calc(var(--pupil-size)*.35); height: calc(var(--pupil-size)*.35);
+    border-radius:50%; background: rgba(255,255,255,.85); left:25%; top:22%; filter: blur(0.2vmin);
+  }
+  .shine::after{
+    content:""; position:absolute; width:55%; height:55%; left:150%; top:130%;
+    border-radius:50%; background: rgba(255,255,255,.4); filter: blur(0.25vmin);
+  }
+  .eyelid{ position:absolute; inset:0; background:var(--bg); transform-origin:top center; transform:scaleY(0); pointer-events:none; }
+  .blink .eyelid{ animation: blink var(--blink-speed) ease-in-out forwards; }
+  @keyframes blink{ 0%{transform:scaleY(0)} 45%{transform:scaleY(1)} 100%{transform:scaleY(0)} }
+
+  /* 폴백용 비디오: 화면에 보이지 않게 */
+  video#keepAwake{
+    position: fixed; width:1px; height:1px; opacity:0; pointer-events:none; left:-9999px; top:-9999px;
+  }
+</style>
+</head>
+<body>
+  <button id="fsBtn">전체화면</button>
+  <div id="wlStatus">WakeLock: init</div>
+
+  <!-- 폴백: 무음/자동재생/루프용 초저해상도 비디오 -->
+  <video id="keepAwake" playsinline muted loop preload="auto">
+    <source src="data:video/mp4;base64,AAAAIGZ0eXBtcDQyAAAAAG1wNDFtcDQxaXNvbWF2YzEAAAAIZnJlZQA=" type="video/mp4">
+  </video>
+
+  <div class="face" id="face">
+    <div class="eyes">
+      <div class="eye"><div class="pupil"><div class="shine"></div></div><div class="eyelid"></div></div>
+      <div class="eye"><div class="pupil"><div class="shine"></div></div><div class="eyelid"></div></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const fsBtn = document.getElementById('fsBtn');
+  const wlBadge = document.getElementById('wlStatus');
+  const eyes = [...document.querySelectorAll('.eye')];
+  const pupils = [...document.querySelectorAll('.pupil')];
+  const keepAwakeVid = document.getElementById('keepAwake');
+
+  const setBadge = (t)=> wlBadge && (wlBadge.textContent = 'WakeLock: ' + t);
+
+  /* ===== 깜빡임 ===== */
+  (function scheduleBlink(){
+    const t = 2200 + Math.random()*3300;
+    setTimeout(() => {
+      eyes.forEach(e => {
+        e.classList.add('blink');
+        setTimeout(() => e.classList.remove('blink'),
+          parseFloat(getComputedStyle(root).getPropertyValue('--blink-speed')) + 40);
+      });
+      scheduleBlink();
+    }, t);
+  })();
+
+  /* ===== 시선 추적 ===== */
+  const clamp = (dx,dy,limit)=> {
+    const d = Math.hypot(dx,dy); if (d<=limit) return {x:dx, y:dy};
+    const r = limit/d; return {x:dx*r, y:dy*r};
+  };
+  function move(nx, ny){
+    eyes.forEach((eye,i)=>{
+      const rect = eye.getBoundingClientRect();
+      const r = Math.min(rect.width, rect.height)/2;
+      const lim = r*0.32;
+      const p = clamp(nx*lim, ny*lim, lim);
+      pupils[i].style.transform = `translate(calc(-50% + ${p.x}px), calc(-50% + ${p.y}px))`;
+    });
+  }
+  function onPointer(e){
+    const pt = ('touches' in e) ? e.touches[0] : e;
+    const cx = innerWidth/2, cy = innerHeight/2;
+    const dx = pt.clientX - cx, dy = pt.clientY - cy;
+    const d = Math.hypot(innerWidth, innerHeight) || 1;
+    move(Math.max(-1, Math.min(1, dx/(d*0.25))), Math.max(-1, Math.min(1, dy/(d*0.25))));
+  }
+  addEventListener('pointermove', onPointer, {passive:true});
+  addEventListener('pointerdown', onPointer, {passive:true});
+  addEventListener('deviceorientation', e=>{
+    const {beta, gamma} = e; if (beta==null || gamma==null) return;
+    move(Math.max(-1, Math.min(1, gamma/30)), Math.max(-1, Math.min(1, beta/30)));
+  }, true);
+  addEventListener('resize', ()=>move(0,0));
+  move(0,0);
+
+  /* ===== Wake Lock + 비디오 폴백 ===== */
+  let wakeLock = null;
+  async function requestWakeLock(){
+    try{
+      if ('wakeLock' in navigator && !wakeLock){
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener?.('release', ()=>{ wakeLock = null; setBadge('released'); });
+        setBadge('active');
+        // 폴백 비디오는 정지
+        stopVideoFallback();
+      }else if(!('wakeLock' in navigator)){
+        setBadge('unavailable');
+        startVideoFallback();
+      }
+    }catch(err){
+      console.log('WakeLock error:', err);
+      setBadge('error');
+      startVideoFallback();
+      wakeLock = null;
+    }
+  }
+  async function releaseWakeLock(){
+    try{ await wakeLock?.release(); }catch(_){}
+    finally { wakeLock = null; setBadge('off'); stopVideoFallback(); }
+  }
+
+  async function startVideoFallback(){
+    if (!keepAwakeVid) return;
+    try{
+      // 오토플레이는 사용자 제스처 이후에만 안정적. 전체화면 버튼 클릭/더블탭 이후 시도됨.
+      await keepAwakeVid.play();
+      setBadge('video-fallback');
+    }catch(e){
+      // 어떤 기기는 무음이라도 즉시 재생 불가 → 이후 제스처마다 재시도
+      setBadge('video-fallback(wait)');
+    }
+  }
+  function stopVideoFallback(){
+    if (!keepAwakeVid) return;
+    try{ keepAwakeVid.pause(); keepAwakeVid.currentTime = 0; }catch(_){}
+  }
+
+  // 앱 전환 등으로 가려졌다가 다시 보이면 재요청
+  document.addEventListener('visibilitychange', ()=>{
+    if (!document.hidden && document.fullscreenElement) requestWakeLock();
+  });
+
+  /* ===== 전체화면 토글 & 더블탭 종료 ===== */
+  const inFS = ()=> !!document.fullscreenElement;
+  function onFSChange(){
+    const fs = inFS();
+    fsBtn.textContent = fs ? '전체화면 해제' : '전체화면';
+    fsBtn.classList.toggle('hidden', fs);
+    if (fs) requestWakeLock(); else releaseWakeLock();
+  }
+  fsBtn.addEventListener('click', async ()=>{
+    try{
+      if(!inFS()) await document.documentElement.requestFullscreen();
+      else await document.exitFullscreen();
+    }catch(_){}
+  });
+  document.addEventListener('fullscreenchange', onFSChange);
+
+  // 더블클릭(데스크톱/안드로이드)로 종료
+  addEventListener('dblclick', async ()=>{
+    if(!inFS()) return;
+    try{ await document.exitFullscreen(); }catch(_){}
+  });
+
+  // 더블탭 폴백
+  let lastTap=0; const GAP=300;
+  addEventListener('pointerup', async (e)=>{
+    // 재미용 깜빡
+    eyes.forEach(el=>{
+      el.classList.add('blink');
+      setTimeout(()=>el.classList.remove('blink'),
+        parseFloat(getComputedStyle(root).getPropertyValue('--blink-speed')) + 40);
+    });
+    if(!inFS()) return;
+    const now = e.timeStamp||Date.now();
+    if(now-lastTap<=GAP){
+      try{ await document.exitFullscreen(); }catch(_){}
+      lastTap=0;
+    }else{
+      lastTap=now;
+    }
+  });
+})();
+</script>
+</body>
+</html>
