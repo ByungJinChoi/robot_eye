@@ -34,8 +34,7 @@
     --keyGap: 6px;
     --keyFont: 14px;
 
-    /* 전체화면 눈동자 기본값 */
-    --eyesScale: 1;         /* 방향에 따라 1.5배(가로)로 바뀜 */
+    /* 기본 눈 변수(코딩 화면에서는 사용 안 함, 오버레이에서만 씀) */
     --eyesGap: 8vmin;
     --eyeSize: 42vmin;
     --pupilSize: 16vmin;
@@ -43,14 +42,6 @@
   }
   @media (max-width: 480px){
     :root{ --keyGap: 4px; --keyFont: 13px; }
-  }
-  @media (orientation: landscape){
-    :root{
-      --eyesScale: 1.5;
-      --eyesGap: 16vmin;
-      --eyeSize: calc(42vmin * 1.5);
-      --pupilSize: calc(16vmin * 1.5);
-    }
   }
 
   *{ box-sizing:border-box; }
@@ -209,16 +200,24 @@
   #playOverlay{
     position:fixed; inset:0; background:#000; color:#fff; display:none; z-index:10000;
     touch-action:none; overscroll-behavior:contain; -webkit-tap-highlight-color:transparent;
+    /* 오버레이 전용: 눈 60% 축소(변수로 직접 덮어쓰기) */
+    --eyesGap: 4.8vmin;            /* 8vmin * 0.6 */
+    --eyeSize: 25.2vmin;           /* 42vmin * 0.6 */
+    --pupilSize: 9.6vmin;          /* 16vmin * 0.6 */
+  }
+  @media (orientation: landscape){
+    #playOverlay{
+      --eyesGap: calc(4.8vmin * 2);          /* 가로에서 간격 2배 */
+      --eyeSize: calc(25.2vmin * 1.5);       /* 가로에서 기본 1.5배 */
+      --pupilSize: calc(9.6vmin * 1.5);
+    }
   }
   #playOverlay.show{ display:flex; flex-direction:column; }
   #playOverlay .body{ flex:1 1 auto; display:flex; align-items:center; justify-content:center; background:#000; }
 
-  /* 눈동자 UI (60% 축소 반영) */
+  /* 눈동자 UI (변수 기반 크기) */
   #eyesStage{ width:100%; height:100%; display:grid; place-items:center; background:#000; }
-  .eyes{
-    display:grid; grid-auto-flow:column; align-items:center; gap: var(--eyesGap);
-    transform: scale(calc(var(--eyesScale) * 0.6));  /* ★ 60% 크기 */
-  }
+  .eyes{ display:grid; grid-auto-flow:column; align-items:center; gap: var(--eyesGap); }
   .eye{
     position:relative; width:var(--eyeSize); height:var(--eyeSize);
     border-radius: 50%; overflow:hidden;
@@ -252,7 +251,7 @@
   }
   #overlayColorBadge .dot{ display:inline-block; width:.9em; height:.9em; border-radius:50%; margin-right:.5em; vertical-align:-0.12em; box-shadow:0 0 0 2px rgba(255,255,255,.2) inset; }
 
-  /* 전체화면 처리용 전면 카메라(아주 작게, 거울효과) */
+  /* 전체화면 처리용 전면 카메라(아주 작게, 거울효과, 이벤트 막지 않기) */
   #eyesCam{
     position: fixed; left:0; bottom:0; width:12px; height:12px;
     opacity: .05; pointer-events:none; z-index:0; transform: scaleX(-1);
@@ -381,9 +380,7 @@ var ws = Blockly.inject('blocklyDiv', {
 /* ▼▼ Blockly v12 변수 API 경고 제거용 SHIM ▼▼ */
 (function patchBlocklyDeprecated(){
   try{
-    if (Blockly.Workspace &&
-        Blockly.Workspace.prototype &&
-        Blockly.Workspace.prototype.getAllVariables) {
+    if (Blockly.Workspace && Blockly.Workspace.prototype && Blockly.Workspace.prototype.getAllVariables) {
       Blockly.Workspace.prototype.getAllVariables = function(){
         var vm = this.getVariableMap ? this.getVariableMap() : null;
         return (vm && vm.getAllVariables) ? vm.getAllVariables() : [];
@@ -777,11 +774,12 @@ async function startFullRun(){
   overlay.setAttribute('aria-hidden','false');
   try{ if(overlay.requestFullscreen) await overlay.requestFullscreen(); }catch(e){}
 
-  // 카메라 자동 시작(없으면) + 오버레이 눈동자 루프 시작
+  // 카메라 자동 시작(없으면)
   overlayStartedCam = !camOn;
   if(!camOn){
     try{ await startCam(); }catch(e){ log('⚠️ 실행 중 카메라 시작 실패: '+e); }
   }
+  // 오버레이 비디오에 동일 스트림 공유
   try{
     const eyesCam = document.getElementById('eyesCam');
     if(camStream) { eyesCam.srcObject = camStream; await eyesCam.play(); }
@@ -808,7 +806,6 @@ btnRun.onclick  = ()=> { if(!isRunning) startFullRun(); else stopRun(); };
 /* ===== 전체화면에서 백버튼/제스처로 FS 해제될 때 오버레이도 닫기 ===== */
 document.addEventListener('fullscreenchange', ()=>{
   if (isFullscreenRun && !document.fullscreenElement){
-    // 사용자가 뒤로가기/제스처로 나간 경우
     stopRun();
   }
 });
@@ -827,6 +824,16 @@ const colorReadout = document.getElementById('colorReadout');
 const colorDot  = colorReadout.querySelector('.dot');
 const colorLabel= colorReadout.querySelector('.label');
 
+/* 공용 파라미터 (패널/오버레이 동일 사용) */
+const LOW_W = 64, LOW_H = 48;         // 다운샘플 크기
+const S_MIN = 0.35, V_MIN = 0.20;     // 채도/명도 컷
+const CONF_MIN = 0.55;                // 색 신뢰도 컷
+const HOLD_MS = 250;                  // 색 변경 디바운스
+const MASS_MIN = 12000;               // 모션 총량 임계
+const FOCUS_LERP = 0.20;              // 초점 스무딩
+const ROI_MIN_WEIGHT_PER_PIXEL = 0.22;// ROI 픽셀당 최소 가중치
+const ROI_MIN_WEIGHT_FLOOR = 30;      // ROI 가중치 하한
+
 const NAME_KR = { RED:'빨간색', ORG:'주황색', YEL:'노란색', GRN:'초록색', BLU:'파랑색', VIO:'보라색', NONE:'색없음' };
 const HUE_MAP = { RED:0, ORG:28, YEL:55, GRN:120, BLU:210, VIO:285 };
 function updateColorReadout(code){
@@ -837,16 +844,6 @@ function updateColorReadout(code){
 }
 
 let camStream = null, camOn = false, camRAF = null;
-
-/* ROI/색 판정 파라미터(패널) */
-const LOW_W = 64, LOW_H = 48;
-const S_MIN = 0.35, V_MIN = 0.20;
-const CONF_MIN = 0.55;
-const HOLD_MS = 250;
-const MASS_MIN = 12000;
-const FOCUS_LERP = 0.20;
-const ROI_MIN_WEIGHT_PER_PIXEL = 0.22;
-const ROI_MIN_WEIGHT_FLOOR = 30;
 
 const procCvs = document.createElement('canvas');
 const procCtx = procCvs.getContext('2d', { willReadFrequently:true });
@@ -877,7 +874,7 @@ function hueToCat(h){
   return 'VIO';
 }
 
-/* 상태 */
+/* 상태 (패널) */
 let activeColor = null, candColor = null, candSince = 0;
 let fx=0.5, fy=0.5, fxT=0.5, fyT=0.5;
 
@@ -928,9 +925,10 @@ function startDetectLoop(){
     if(!camOn || camVideo.readyState < 2){ camRAF = requestAnimationFrame(step); return; }
 
     procCtx.drawImage(camVideo, 0, 0, LOW_W, LOW_H);
-    const data = procCtx.getImageData(0,0,LOW_W,LOW_H).data;
+    const frame = procCtx.getImageData(0,0,LOW_W,LOW_H);
+    const data = frame.data;
 
-    // 움직임(프레임차) + ROI 색 집계
+    // 움직임(프레임차) + 무게중심
     if (!step.prevGray) step.prevGray = new Uint8ClampedArray(LOW_W*LOW_H);
     let mass=0, sx=0, sy=0;
 
@@ -944,9 +942,10 @@ function startDetectLoop(){
       }
     }
 
+    // 초점 업데이트
     if (mass > MASS_MIN){
       const cx = sx / mass, cy = sy / mass;
-      fxT = 1 - (cx / (LOW_W-1));
+      fxT = 1 - (cx / (LOW_W-1));  // 좌우 반전
       fyT =      (cy / (LOW_H-1));
       focusBox.style.opacity = '1';
     }else{
@@ -956,7 +955,7 @@ function startDetectLoop(){
     focusBox.style.left = (fx*100).toFixed(1)+'%';
     focusBox.style.top  = (fy*100).toFixed(1)+'%';
 
-    // ROI 변환: DOM 비율→저해상도
+    // ROI 경계 계산 (focusBox 비율 → LOW 해상도)
     const cw = camWrap.clientWidth  || 1, ch = camWrap.clientHeight || 1;
     const bw = focusBox.clientWidth || 0, bh = focusBox.clientHeight|| 0;
     const wFrac = Math.min(1, Math.max(0.01, bw / cw));
@@ -973,7 +972,7 @@ function startDetectLoop(){
 
     // ROI 색 집계
     let totalW = 0;
-    const acc2 = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
+    const acc = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
     for(let y=y0; y<=y1; y++){
       let p = (y * LOW_W + x0) * 4;
       for(let x=x0; x<=x1; x++, p+=4){
@@ -982,14 +981,14 @@ function startDetectLoop(){
         if (s > S_MIN && v > V_MIN){
           const w = Math.pow(s,1.3) * (0.6 + 0.4*v);
           const cat = hueToCat(h);
-          acc2[cat] += w; totalW += w;
+          acc[cat] += w; totalW += w;
         }
       }
     }
     const WEIGHT_MIN = Math.max(ROI_MIN_WEIGHT_FLOOR, roiPixels * ROI_MIN_WEIGHT_PER_PIXEL);
     let frameColor = null;
     if (totalW > WEIGHT_MIN){
-      let top='RED', topW=-1; for(const k in acc2){ if(acc2[k] > topW){ topW=acc2[k]; top=k; } }
+      let top='RED', topW=-1; for(const k in acc){ if(acc[k] > topW){ topW=acc[k]; top=k; } }
       const conf = topW / totalW;
       if (conf >= CONF_MIN) frameColor = top;
     }
@@ -1007,61 +1006,26 @@ function startDetectLoop(){
   camRAF = requestAnimationFrame(step);
 }
 
-/* ================= 전체화면 눈동자: 카메라 모션 + 색 인식 + 깜빡임(눈꺼풀) ================= */
+/* ================= 전체화면 눈동자: "같은 파이프라인"으로 처리 ================= */
 const overlayEl = document.getElementById('playOverlay');
 const overlayColorBadge = document.getElementById('overlayColorBadge');
 const overlayColorDot = overlayColorBadge.querySelector('.dot');
 const overlayColorLabel = overlayColorBadge.querySelector('.label');
 const eyesCam = document.getElementById('eyesCam');
 
-const eyes = [...document.querySelectorAll('#playOverlay .eye')];
-const pupils = [...document.querySelectorAll('#playOverlay .pupil')];
+const ovEyes = [...document.querySelectorAll('#playOverlay .eye')];
+const ovPupils = [...document.querySelectorAll('#playOverlay .pupil')];
 
-let eyesRAF = null, eyesPrevGray = null;
-let overlayPointerActive = false, overlayPointerIdleTimer = null;
-let overlayBlinkTimer = null;
-let tCurrent = {x:0, y:0}, tTarget = {x:0, y:0};
-const clamp1 = v => Math.max(-1, Math.min(1, v));
-const lerp = (a,b,t)=> a + (b-a)*t;
-
-const CATS_KO = ['빨','주','노','초','파','보'];
-const CAT2FULL = { '빨':'빨강','주':'주황','노':'노랑','초':'초록','파':'파랑','보':'보라' };
-const CAT2H =   { '빨':0, '주':28, '노':55, '초':120, '파':210, '보':285 };
-const MAP_KO_TO_EVENT = { '빨':'RED','주':'ORG','노':'YEL','초':'GRN','파':'BLU','보':'VIO' };
-
-/* 파라미터(오버레이) */
-const E_LOW_W = 64, E_LOW_H = 48;
-const E_DIFF_T = 22;
-const E_MASS_T = 14000;
-const E_S_T = 0.25, E_V_T = 0.18;
-const E_HOLD_MS = 280;
-
-/* 색상 배지 안정화 */
-let committedCat = null, candidateCat = null, candidateSince = 0;
-function overlayUpdateColorBadge(newCat, hueForDot){
-  if (newCat === committedCat) return;
-  const now = performance.now();
-  if (candidateCat !== newCat){ candidateCat = newCat; candidateSince = now; return; }
-  if (now - candidateSince < E_HOLD_MS) return; // 안정화 대기
-
-  committedCat = newCat;
-  if (newCat){
-    overlayColorDot.style.background = `hsl(${Math.round(hueForDot)}, 85%, 55%)`;
-    overlayColorLabel.textContent = `${newCat} (${CAT2FULL[newCat]})`;
-    overlayColorBadge.style.display = 'inline-flex';
-    const evName = MAP_KO_TO_EVENT[newCat];
-    if (evName) triggerEvent(evName);
-  }else{
-    overlayColorBadge.style.display = 'none';
-  }
-}
+let eyesRAF = null;
+let ovPrevGray = null;
 
 /* 눈꺼풀 깜빡임 */
+let overlayBlinkTimer = null;
 function scheduleOverlayBlink(){
   clearTimeout(overlayBlinkTimer);
   const t = 2200 + Math.random()*3300;
   overlayBlinkTimer = setTimeout(()=>{
-    eyes.forEach(e=>{
+    ovEyes.forEach(e=>{
       e.classList.add('blink');
       setTimeout(()=> e.classList.remove('blink'),
         parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--blinkSpeed')) + 40);
@@ -1072,19 +1036,20 @@ function scheduleOverlayBlink(){
 
 /* 동공 렌더 */
 function renderPupils(nx, ny){
-  eyes.forEach((eye, i) => {
+  ovEyes.forEach((eye, i) => {
     const rect = eye.getBoundingClientRect();
     const rEye = Math.min(rect.width, rect.height)/2;
     const limit = rEye * 0.32;
     let dx = nx * limit, dy = ny * limit;
     const dist = Math.hypot(dx,dy);
     if (dist>limit){ const r = limit/dist; dx*=r; dy*=r; }
-    pupils[i].style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    ovPupils[i].style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
   });
 }
 
-/* 포인터(터치)로 시선 제어 */
-function setOverlayTarget(nx,ny){ tTarget.x = clamp1(nx); tTarget.y = clamp1(ny); }
+/* 터치/드래그로 시선 이동 */
+let overlayPointerActive = false, overlayPointerIdleTimer = null;
+function setOverlayTarget(nx,ny){ ovTarget.x = Math.max(-1, Math.min(1,nx)); ovTarget.y = Math.max(-1, Math.min(1,ny)); }
 function handleOverlayPointer(e){
   const pt = ('touches' in e && e.touches[0]) ? e.touches[0] : e;
   const cx = innerWidth/2, cy = innerHeight/2;
@@ -1096,122 +1061,144 @@ function handleOverlayPointer(e){
   overlayPointerIdleTimer = setTimeout(()=> { overlayPointerActive = false; }, 900);
 }
 
-/* 더블클릭/더블탭 핸들러(전역 변수로 보관 → 해제 가능) */
-let overlayDblHandler = null;
-let overlayTapHandler = null;
+/* 더블 탭/클릭 종료 */
+let lastTap=0;
+function onOverlayPointerDown(e){
+  const now = e.timeStamp || Date.now();
+  if (now - lastTap <= 300){ stopRun(); lastTap = 0; }
+  else lastTap = now;
+}
+function onOverlayDblClick(){ stopRun(); }
 
-/* 오버레이 카메라 모션/색 루프 */
+/* 색상 배지 갱신(오버레이) */
+const MAP_KO = { RED:'빨강', ORG:'주황', YEL:'노랑', GRN:'초록', BLU:'파랑', VIO:'보라' };
+function overlayShowColor(code){
+  if (!code){ overlayColorBadge.style.display='none'; return; }
+  overlayColorDot.style.background = `hsl(${HUE_MAP[code]}, 85%, 55%)`;
+  overlayColorLabel.textContent = MAP_KO[code] || code;
+  overlayColorBadge.style.display='inline-flex';
+}
+
+/* 오버레이 타겟/현재(시선) */
+let ovCurrent = {x:0, y:0}, ovTarget = {x:0, y:0};
+
+/* 오버레이 감지 루프: 패널과 동일한 파이프라인 */
 function startOverlayEyes(){
   if(eyesRAF) cancelAnimationFrame(eyesRAF);
-  eyesPrevGray = null; committedCat = null; candidateCat=null; overlayUpdateColorBadge(null,0);
+  ovPrevGray = null; overlayShowColor(null);
   scheduleOverlayBlink();
 
-  // 포인터 이벤트
+  // 이벤트 바인딩
   overlayEl.addEventListener('pointermove', handleOverlayPointer, {passive:true});
   overlayEl.addEventListener('pointerdown', handleOverlayPointer, {passive:true});
+  overlayEl.addEventListener('pointerdown', onOverlayPointerDown, {passive:true});
+  overlayEl.addEventListener('dblclick', onOverlayDblClick, {passive:true});
 
-  // 더블클릭/더블탭으로 종료
-  overlayDblHandler = ()=> { stopRun(); };
-  overlayEl.addEventListener('dblclick', overlayDblHandler, {passive:true});
-
-  let lastTap = 0;
-  overlayTapHandler = (e)=>{
-    // 재미용 눈깜빡
-    eyes.forEach(el=>{
-      el.classList.add('blink');
-      setTimeout(()=>el.classList.remove('blink'),
-        parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--blinkSpeed')) + 40);
-    });
-    const now = e.timeStamp || Date.now();
-    if (now - lastTap <= 300){ stopRun(); lastTap = 0; }
-    else lastTap = now;
-  };
-  overlayEl.addEventListener('pointerup', overlayTapHandler, {passive:true});
-
-  // 루프
   const eProc = document.createElement('canvas');
   const eCtx  = eProc.getContext('2d', { willReadFrequently:true });
-  eProc.width = E_LOW_W; eProc.height = E_LOW_H;
+  eProc.width = LOW_W; eProc.height = LOW_H;
+
+  // 색 변화 안정화
+  let ovActiveColor = null, ovCandColor = null, ovCandSince = 0;
 
   function loop(){
     if(!isRunning || !isFullscreenRun){ eyesRAF = requestAnimationFrame(loop); return; }
     if(!eyesCam || eyesCam.readyState < 2){ eyesRAF = requestAnimationFrame(loop); return; }
 
-    // 프레임 캡처
-    eCtx.drawImage(eyesCam, 0, 0, E_LOW_W, E_LOW_H);
-    const img = eCtx.getImageData(0,0,E_LOW_W,E_LOW_H);
+    eCtx.drawImage(eyesCam, 0, 0, LOW_W, LOW_H);
+    const img = eCtx.getImageData(0,0,LOW_W,LOW_H);
     const data = img.data;
 
-    // 간단 화밸(그레이월드) 게인
-    let sumR=0,sumG=0,sumB=0;
-    for(let p=0; p<data.length; p+=4){ sumR+=data[p]; sumG+=data[p+1]; sumB+=data[p+2]; }
-    const nPix = E_LOW_W*E_LOW_H;
-    const mR=sumR/nPix, mG=sumG/nPix, mB=sumB/nPix;
-    const avg=(mR+mG+mB)/3 || 1;
-    const gR = avg/(mR||1), gG = avg/(mG||1), gB = avg/(mB||1);
+    // 프레임차 모션 + 무게중심
+    if (!ovPrevGray) ovPrevGray = new Uint8ClampedArray(LOW_W*LOW_H);
+    let mass=0, sx=0, sy=0;
 
-    if (!eyesPrevGray) eyesPrevGray = new Uint8ClampedArray(nPix);
-    let mass = 0, sx=0, sy=0;
-    const acc = { '빨':0,'주':0,'노':0,'초':0,'파':0,'보':0 };
+    for (let y=0, i=0, p=0; y<LOW_H; y++){
+      for (let x=0; x<LOW_W; x++, i++){
+        const r = data[p++], g = data[p++], b = data[p++]; p++;
+        const gray = (r*0.299 + g*0.587 + b*0.114)|0;
+        const d = Math.abs(gray - ovPrevGray[i]);
+        ovPrevGray[i] = gray;
 
-    for (let y=0, i=0, p=0; y<E_LOW_H; y++){
-      for (let x=0; x<E_LOW_W; x++, i++){
-        const r0 = data[p++], g0 = data[p++], b0 = data[p++]; p++;
-        const gray = (r0*0.299 + g0*0.587 + b0*0.114)|0;
-        const d = Math.abs(gray - eyesPrevGray[i]);
-        eyesPrevGray[i] = gray;
+        if (d>0){ sx += x * d; sy += y * d; mass += d; }
+      }
+    }
 
-        if (d > E_DIFF_T){
-          sx += (x - E_LOW_W/2) * d;
-          sy += (y - E_LOW_H/2) * d;
-          mass += d;
+    // 초점(fx,fy) 업데이트(패널과 동일)
+    if (!startOverlayEyes.fx){ startOverlayEyes.fx=0.5; startOverlayEyes.fy=0.5; startOverlayEyes.fxT=0.5; startOverlayEyes.fyT=0.5; }
+    let {fx,fy,fxT,fyT} = startOverlayEyes;
 
-          const r = Math.min(255, r0 * gR);
-          const g = Math.min(255, g0 * gG);
-          const b = Math.min(255, b0 * gB);
-          const {h,s,v} = rgb2hsv(r,g,b);
-          if (s > E_S_T && v > E_V_T){
-            const w = d * Math.pow(s, 1.3);
-            let cat;
-            if (h < 15 || h >= 345) cat='빨';
-            else if (h < 40) cat='주';
-            else if (h < 70) cat='노';
-            else if (h < 170) cat='초';
-            else if (h < 250) cat='파';
-            else cat='보';
-            acc[cat] += w;
-          }
+    if (mass > MASS_MIN){
+      const cx = sx / mass, cy = sy / mass;
+      fxT = 1 - (cx / (LOW_W-1));   // 좌우 반전
+      fyT =      (cy / (LOW_H-1));
+    }
+    // 스무딩
+    fx += (fxT-fx)*FOCUS_LERP; fy += (fyT-fy)*FOCUS_LERP;
+    startOverlayEyes.fx=fx; startOverlayEyes.fy=fy; startOverlayEyes.fxT=fxT; startOverlayEyes.fyT=fyT;
+
+    // ROI 계산(패널과 동일: focus 사이즈는 패널의 박스 비율 사용)
+    // 패널 focusBox 기본 22% → 동일 비율 적용
+    const wFrac = 0.22, hFrac = 0.22;
+    const halfWpx = Math.max(1, Math.round(wFrac * LOW_W / 2));
+    const halfHpx = Math.max(1, Math.round(hFrac * LOW_H / 2));
+    const cxPix   = Math.round((1 - fx) * (LOW_W - 1));
+    const cyPix   = Math.round(fy * (LOW_H - 1));
+    const x0 = Math.max(0, cxPix - halfWpx);
+    const y0 = Math.max(0, cyPix - halfHpx);
+    const x1 = Math.min(LOW_W-1, cxPix + halfWpx);
+    const y1 = Math.min(LOW_H-1, cyPix + halfHpx);
+    const roiPixels = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1));
+
+    // ROI 색 집계(동일 임계)
+    let totalW = 0;
+    const acc = { RED:0, ORG:0, YEL:0, GRN:0, BLU:0, VIO:0 };
+    for(let y=y0; y<=y1; y++){
+      let p = (y * LOW_W + x0) * 4;
+      for(let x=x0; x<=x1; x++, p+=4){
+        const r=data[p], g=data[p+1], b=data[p+2];
+        const {h,s,v} = rgb2hsv(r,g,b);
+        if (s > S_MIN && v > V_MIN){
+          const w = Math.pow(s,1.3) * (0.6 + 0.4*v);
+          const cat = hueToCat(h);
+          acc[cat] += w; totalW += w;
         }
       }
     }
+    const WEIGHT_MIN = Math.max(ROI_MIN_WEIGHT_FLOOR, roiPixels * ROI_MIN_WEIGHT_PER_PIXEL);
+    let frameColor = null;
+    if (totalW > WEIGHT_MIN){
+      let top='RED', topW=-1; for(const k in acc){ if(acc[k] > topW){ topW=acc[k]; top=k; } }
+      const conf = topW / totalW;
+      if (conf >= CONF_MIN) frameColor = top;
+    }
+    const now = performance.now();
+    if (ovCandColor !== frameColor){ ovCandColor = frameColor; ovCandSince = now; }
+    if ((now - ovCandSince) >= HOLD_MS && ovActiveColor !== frameColor){
+      ovActiveColor = frameColor;
+      overlayShowColor(ovActiveColor || null);
+      if (ovActiveColor){ triggerEvent(ovActiveColor); }
+    }
 
-    // 눈동자: 모션 방향(터치 중이면 무시)
+    // 시선: 모션 방향 (터치가 있으면 터치 우선)
     if (!overlayPointerActive){
-      if (mass > E_MASS_T){
-        let nx = -(sx/mass)/(E_LOW_W/2);  // 전면카메라 x축 반전
-        let ny =  (sy/mass)/(E_LOW_H/2);
+      if (mass > MASS_MIN){
+        // 패널과 동일한 방식으로 방향 벡터
+        let nx = -((sx/mass) - (LOW_W/2)) / (LOW_W/2);  // 이미 sx는 x*d 누적 → 변환
+        let ny =  ((sy/mass) - (LOW_H/2)) / (LOW_H/2);
         const dead=0.06;
         nx = Math.abs(nx)<dead ? 0 : nx;
         ny = Math.abs(ny)<dead ? 0 : ny;
-        tTarget.x = clamp1(nx*1.2);
-        tTarget.y = clamp1(ny*1.2);
+        ovTarget.x = Math.max(-1, Math.min(1, nx*1.2));
+        ovTarget.y = Math.max(-1, Math.min(1, ny*1.2));
       }else{
-        tTarget.x *= 0.985; tTarget.y *= 0.985; // 중앙 복귀
+        ovTarget.x *= 0.985; ovTarget.y *= 0.985;
       }
     }
     // 보간 + 렌더
-    tCurrent.x = lerp(tCurrent.x, tTarget.x, 0.20);
-    tCurrent.y = lerp(tCurrent.y, tTarget.y, 0.20);
-    renderPupils(tCurrent.x, tCurrent.y);
-
-    // 색상 인식: 변화 있을 때만
-    const totalW = CATS_KO.reduce((s,k)=>s+acc[k],0);
-    if (mass > E_MASS_T && totalW > 0){
-      let topCat = '빨', topW=-1;
-      for(const k of CATS_KO){ if (acc[k] > topW){ topW = acc[k]; topCat = k; } }
-      const conf = topW / (totalW || 1);
-      if (conf >= 0.55){ overlayUpdateColorBadge(topCat, CAT2H[topCat]); }
-    }
+    ovCurrent.x = ovCurrent.x + (ovTarget.x - ovCurrent.x)*0.20;
+    ovCurrent.y = ovCurrent.y + (ovTarget.y - ovCurrent.y)*0.20;
+    renderPupils(ovCurrent.x, ovCurrent.y);
 
     eyesRAF = requestAnimationFrame(loop);
   }
@@ -1220,17 +1207,12 @@ function startOverlayEyes(){
 
 function stopOverlayEyes(){
   if(eyesRAF){ cancelAnimationFrame(eyesRAF); eyesRAF=null; }
-  eyesPrevGray=null; committedCat=null; candidateCat=null;
-  overlayColorBadge.style.display='none';
+  ovPrevGray=null; overlayShowColor(null);
   clearTimeout(overlayBlinkTimer);
-
-  // 안전하게 리스너 해제
   overlayEl.removeEventListener('pointermove', handleOverlayPointer);
   overlayEl.removeEventListener('pointerdown', handleOverlayPointer);
-  if (overlayDblHandler){ overlayEl.removeEventListener('dblclick', overlayDblHandler); overlayDblHandler=null; }
-  if (overlayTapHandler){ overlayEl.removeEventListener('pointerup', overlayTapHandler); overlayTapHandler=null; }
-
-  overlayPointerActive=false;
+  overlayEl.removeEventListener('pointerdown', onOverlayPointerDown);
+  overlayEl.removeEventListener('dblclick', onOverlayDblClick);
 }
 
 /* ================= 끝 ================= */
