@@ -1,3 +1,301 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>XROBO BLE</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script src="https://unpkg.com/blockly/blockly.min.js"></script>
+<style>
+  :root{
+    --pad:10px;
+    --uiScale: 1;
+    --headerH: 64px;
+    --btnH: 36px;
+    --gap: 8px;
+    --headerBgTop: #fff7ed;
+    --headerBgBottom: #fffbeb;
+    --headerBorder: #fed7aa;
+    --logH: 180px;
+    --blue: #1d4ed8;
+
+    --handleWBase: 22;
+    --handleHBase: 28;
+    --triWBase:   14;
+    --triHBase:   12;
+
+    --handleW: calc(var(--handleWBase) * var(--uiScale) * 1px);
+    --handleH: calc(var(--handleHBase) * var(--uiScale) * 1px);
+    --triW:    calc(var(--triWBase)    * var(--uiScale) * 1px);
+    --triH:    calc(var(--triHBase)    * var(--uiScale) * 1px);
+    --linkBar: calc(3 * var(--uiScale) * 1px);
+
+    --keyW: clamp(52px, 8vmin, 92px);
+    --keyH: calc(var(--keyW) * 2.7);
+    --keyGap: 6px;
+    --keyFont: 14px;
+  }
+  @media (max-width: 480px){
+    :root{ --keyGap: 4px; --keyFont: 13px; }
+  }
+
+  *{ box-sizing:border-box; }
+  html, body{ height:100%; }
+  body{ margin:0; font-family:system-ui, sans-serif; background:#fff; }
+
+  /* ── 헤더 ───────────────────────────────── */
+  header{
+    padding: 8px 12px;
+    background: linear-gradient(180deg, var(--headerBgTop), var(--headerBgBottom));
+    border-bottom: 1px solid var(--headerBorder);
+    position:relative; z-index:10;
+  }
+  #topbar{
+    display:flex; align-items:center; gap: calc(var(--gap) * var(--uiScale));
+    flex-wrap: wrap;
+  }
+  .title{
+    font-weight: 800; letter-spacing: .2px;
+    color:#7c2d12; margin-right: 12px;
+    font-size: calc(18px * var(--uiScale));
+  }
+  .spacer{ flex: 1 1 auto; }
+
+  .btn{
+    height: calc(var(--btnH) * var(--uiScale));
+    padding: 0 calc(12px * var(--uiScale));
+    border:0; border-radius: calc(10px * var(--uiScale));
+    display:inline-flex; align-items:center; justify-content:center;
+    font-size: calc(14px * var(--uiScale)); font-weight:600;
+    box-shadow:0 2px 8px rgba(0,0,0,.08);
+    background:#f3f4f6; color:#111827; cursor:pointer;
+    user-select:none;
+  }
+  .btn.small{
+    height: calc(var(--btnH) * var(--uiScale) * .85);
+    padding: 0 calc(10px * var(--uiScale));
+    font-size: calc(12px * var(--uiScale));
+  }
+  #connectToggle{ background:#2563eb; color:#fff; }
+  #runToggle{ background:#16a34a; color:#fff; }
+  #fsBtn{ background:#111827; color:#fff; }
+
+  .state{
+    display:inline-flex; align-items:center; gap:calc(6px * var(--uiScale));
+    height: calc(var(--btnH) * var(--uiScale));
+    padding: 0 calc(6px * var(--uiScale));
+    font-size: calc(12px * var(--uiScale));
+  }
+  .badgeDot{
+    width: calc(22px * var(--uiScale));
+    height: calc(22px * var(--uiScale));
+    border-radius: 50%;
+    display:inline-flex; align-items:center; justify-content:center;
+    font-size: calc(11px * var(--uiScale));
+    font-weight:800; color:#fff;
+    box-shadow: 0 0 0 calc(4px * var(--uiScale)) rgba(0,0,0,.06) inset;
+  }
+  .badgeDot.on{ background:#3b82f6; }
+  .badgeDot.off{ background:#ef4444; }
+
+  /* ── 레이아웃 ─────────────────────────── */
+  #main{ display:flex; width:100%; height: calc(100vh - var(--headerH)); }
+  #left{ position:relative; flex:1 1 auto; min-width:0; height:100%; display:flex; overflow:visible; }
+  #blocklyDiv{ flex:1 1 auto; min-width:0; height:100%; width:100%; }
+
+  #right{
+    flex:0 0 40%; display:flex; flex-direction:column; background:#fff;
+    margin:8px 8px 8px 0; border:1px solid #e5e7eb; border-left:3px solid var(--blue);
+    border-radius:12px 0 0 12px; box-shadow:0 2px 10px rgba(0,0,0,.04); overflow:hidden;
+    position:relative;
+  }
+
+  /* ── 우측 상단: 카메라 프리뷰 ── */
+  #rightTop{
+    flex:1 1 auto; border-bottom:1px solid #e5e7eb; min-height: 120px;
+    background:#0b0f14; color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    padding: 0; overflow:hidden;
+  }
+  .camWrap{
+    position:relative; width:100%; height:100%;
+    display:flex; align-items:center; justify-content:center; background:#000;
+  }
+  #camVideo{
+    width:100%; height:100%; object-fit:cover; transform: scaleX(-1); /* 전면 카메라 거울 효과 */
+    background:#000;
+  }
+  .camUi{
+    position:absolute; right:12px; top:12px; display:flex; gap:8px; align-items:center; z-index:2;
+  }
+  .camBadge{
+    font: 700 12px/1 system-ui; color:#fff;
+    padding:.35rem .6rem; border-radius:999px; border:1px solid rgba(255,255,255,.3);
+    background:rgba(0,0,0,.35); backdrop-filter: blur(6px)
+  }
+  /* 움직임 초점 박스 */
+  #focusBox{
+    position:absolute; left:50%; top:50%;
+    width:22%; aspect-ratio:1/1;
+    transform: translate(-50%,-50%);
+    border:2px solid rgba(255,255,255,.9);
+    border-radius:10px;
+    box-shadow:0 0 0 2px rgba(0,0,0,.25), 0 0 18px rgba(0,255,220,.35);
+    pointer-events:none; z-index:2; opacity:.15; transition: opacity .2s linear;
+  }
+  /* ★ 추가: 색상 읽기 표시 (캠 화면 아래쪽 중앙) */
+  #colorReadout{
+    position:absolute; left:50%; transform:translateX(-50%);
+    bottom:12px; z-index:2; display:inline-flex; align-items:center; gap:.55rem;
+    font: 800 13px/1 system-ui; color:#fff;
+    padding:.48rem .8rem; border-radius:999px; border:1px solid rgba(255,255,255,.35);
+    background:rgba(0,0,0,.35); backdrop-filter: blur(6px);
+  }
+  #colorReadout .dot{
+    width:1em; height:1em; border-radius:50%; box-shadow:0 0 0 2px rgba(255,255,255,.25) inset;
+  }
+
+  /* 리사이저 바 */
+  #rightDivider{
+    flex:0 0 6px; cursor: row-resize;
+    background: repeating-linear-gradient(90deg, #d1d5db 0, #d1d5db 6px, #e5e7eb 6px, #e5e7eb 12px);
+  }
+
+  /* 로그 패널 */
+  #rightBottom{
+    flex: 0 0 var(--logH);
+    display:flex; flex-direction:column; min-height:0; overflow:hidden;
+    padding: calc(10px * var(--uiScale));
+    background:#0b0f14; color:#d1e4ff; border-top:1px solid #1f2937;
+  }
+  #log{
+    flex:1 1 0; min-height:0; overflow:auto; white-space:pre-wrap;
+    background:#0b0f14; border:1px solid #1f2937; border-radius: calc(8px * var(--uiScale));
+    padding: calc(10px * var(--uiScale));
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: calc(12px * var(--uiScale)); color:#d1e4ff;
+  }
+
+  /* 실행창 토글 핸들 */
+  #panelHandle{
+    position:absolute; top: calc(12px * var(--uiScale)); right: 0;
+    z-index:9999; width: var(--handleW); height: var(--handleH);
+    background: var(--blue); border: 0; border-radius: calc(6px * var(--uiScale));
+    box-shadow: 0 2px 8px rgba(0,0,0,.18);
+    cursor: pointer; padding: 0;
+  }
+  #panelHandle::before{
+    content:''; position:absolute; top:0; right: calc(0px - var(--linkBar));
+    width: var(--linkBar); height:100%; background: var(--blue);
+    border-top-right-radius: calc(6px * var(--uiScale));
+    border-bottom-right-radius: calc(6px * var(--uiScale));
+  }
+  #panelHandle::after{
+    content:''; position:absolute; top:50%; transform: translateY(-50%);
+    width:0; height:0; border-style: solid;
+  }
+  #panelHandle.open::after{
+    left: calc((var(--handleW) - var(--triW)) / 2);
+    border-width: var(--triH) 0 var(--triH) var(--triW);
+    border-color: transparent transparent transparent white;
+  }
+  #panelHandle.closed::after{
+    left: calc((var(--handleW) - var(--triW)) / 2);
+    border-width: var(--triH) var(--triW) var(--triH) 0;
+    border-color: transparent white transparent transparent;
+  }
+
+  .blocklyZoom,.blocklyTrash{ display:block !important; }
+  .blocklyTrashLid, .blocklyTrashcanLid, .blocklyTrashCanLid { display:none !important; }
+
+  body.fs-active #main{ height: calc(100vh - var(--headerH)); }
+  body.panel-collapsed #right{ display:none; }
+  body.panel-collapsed #left{ flex:1 1 100%; }
+</style>
+</head>
+<body>
+  <!-- 헤더 -->
+  <header id="appHeader">
+    <div id="topbar">
+      <div class="title">XROBO BLE</div>
+      <div class="spacer"></div>
+
+      <button id="saveBtn" class="btn" title="프로젝트 저장">저장</button>
+      <button id="openBtn" class="btn" title="프로젝트 불러오기">불러오기</button>
+
+      <span class="state"><span id="statusDot" class="badgeDot off">off</span></span>
+      <button id="connectToggle" class="btn">연결</button>
+      <button id="runToggle" class="btn">▶ 실행</button> <!-- ★ 실행해도 전체화면 없음 -->
+      <button id="fsBtn" class="btn" title="전체화면">전체화면</button>
+    </div>
+  </header>
+
+  <!-- 본문 -->
+  <div id="main">
+    <div id="left">
+      <div id="blocklyDiv"></div>
+      <button id="panelHandle" class="open" title="실행창 닫기"></button>
+    </div>
+
+    <div id="right">
+      <!-- 우측 상단: 카메라 프리뷰 -->
+      <div id="rightTop">
+        <div class="camWrap">
+          <video id="camVideo" playsinline autoplay muted></video>
+          <div id="focusBox"></div>
+          <div class="camUi">
+            <span id="camBadge" class="camBadge">Cam: off</span>
+            <button id="camToggle" class="btn small">캠 켜기</button>
+          </div>
+          <!-- ★ 추가: 색상 표시 바 -->
+          <div id="colorReadout"><span class="dot"></span><span class="label">색없음</span></div>
+        </div>
+      </div>
+      <div id="rightDivider" title="드래그하여 로그 높이 조절"></div>
+      <div id="rightBottom">
+        <div style="font-size:calc(12px * var(--uiScale));color:#9ca3af;">실행 로그</div>
+        <div id="log"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 툴박스 -->
+  <xml id="toolbox" style="display:none">
+    <category name="이벤트" colour="#f59e0b">
+      <!-- ★ 드롭다운 색 선택 -->
+      <block type="xrobo_start"></block>
+    </category>
+
+    <category name="출력" colour="#60a5fa">
+      <block type="motor12_dd">
+        <field name="M1">20</field><field name="M2">20</field><field name="MS">500</field>
+      </block>
+      <block type="motor12_in">
+        <value name="M1"><shadow type="math_number"><field name="NUM">20</field></shadow></value>
+        <value name="M2"><shadow type="math_number"><field name="NUM">20</field></shadow></value>
+        <value name="MS"><shadow type="math_number"><field name="NUM">500</field></shadow></value>
+      </block>
+      <block type="melody">
+        <field name="PITCH">C4</field>
+        <value name="DUR"><shadow type="math_number"><field name="NUM">200</field></shadow></value>
+        <value name="WAIT"><shadow type="math_number"><field name="NUM">0</field></shadow></value>
+      </block>
+      <block type="led_ctrl">
+        <field name="TGT">OUT1</field>
+        <field name="MODE">BRIGHT</field>
+        <field name="VAL">10</field>
+      </block>
+    </category>
+
+    <category name="제어" colour="#10b981">
+      <block type="controls_repeat_ext">
+        <value name="TIMES"><shadow type="math_number"><field name="NUM">3</field></shadow></value>
+      </block>
+      <block type="wait_seconds">
+        <value name="SEC"><shadow type="math_number"><field name="NUM">1</field></shadow></value>
+      </block>
+    </category>
+  </xml>
+
 <script>
 /* ================= 카메라: 프리뷰 + 색 감지 + 움직임 초점 (이전 알고리즘 복원) ================= */
 const camVideo = $('camVideo');
@@ -203,3 +501,6 @@ function startDetectLoop(){
   camRAF = requestAnimationFrame(step);
 }
 </script>
+
+</body>
+</html>
