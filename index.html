@@ -33,9 +33,16 @@
     --keyH: calc(var(--keyW) * 2.7);
     --keyGap: 6px;
     --keyFont: 14px;
+
+    /* 눈동자 오버레이 크기/간격 */
+    --eyesScale: 1;
+    --eyesGap: 12vmin;
   }
   @media (max-width: 480px){
     :root{ --keyGap: 4px; --keyFont: 13px; }
+  }
+  @media (orientation: landscape){
+    :root{ --eyesScale: 1.5; --eyesGap: 24vmin; }
   }
 
   *{ box-sizing:border-box; }
@@ -77,6 +84,7 @@
   }
   #connectToggle{ background:#2563eb; color:#fff; }
   #runToggle{ background:#16a34a; color:#fff; }
+  #testBtn{ background:#0ea5e9; color:#fff; } /* 새 테스트 버튼 */
   #fsBtn{ background:#111827; color:#fff; }
 
   .state{
@@ -121,7 +129,7 @@
     display:flex; align-items:center; justify-content:center; background:#000;
   }
   #camVideo{
-    width:100%; height:100%; object-fit:cover; transform: scaleX(-1); /* 전면 카메라 거울 효과 */
+    width:100%; height:100%; object-fit:cover; transform: scaleX(-1);
     background:#000;
   }
   .camUi{
@@ -210,8 +218,58 @@
   body.panel-collapsed #right{ display:none; }
   body.panel-collapsed #left{ flex:1 1 100%; }
 
-  /* (미사용) 전체화면 오버레이 */
-  #playOverlay{ position:fixed; inset:0; background:#0b0f14; color:#fff; display:none; z-index:10000; }
+  /* ── 전체화면 오버레이(눈동자) ───────────────── */
+  #playOverlay{
+    position:fixed; inset:0; background:#000; color:#fff; display:none; z-index:10000;
+  }
+  #playOverlay.show{ display:flex; flex-direction:column; }
+  #playOverlay .topbar{
+    height:56px; display:flex; align-items:center; justify-content:flex-end;
+    padding: 10px 14px; border-bottom:1px solid #1f2937; background:#000;
+  }
+  #overlayClose{
+    background:#ef4444; color:#fff; border:0; border-radius:10px; padding:10px 16px; font-weight:800; cursor:pointer;
+    box-shadow:0 2px 8px rgba(0,0,0,.2);
+  }
+  #playOverlay .body{
+    flex:1 1 auto; display:flex; align-items:center; justify-content:center; background:#000;
+  }
+
+  /* 눈동자 UI */
+  #eyesStage{ width:100%; height:100%; display:flex; align-items:center; justify-content:center; background:#000; }
+  .eyes{ display:flex; align-items:center; justify-content:center; gap: var(--eyesGap); transform: scale(var(--eyesScale)); }
+  .eye{
+    width: min(36vw, 38vmin); aspect-ratio: 1/1; border-radius: 50%;
+    background:#fff; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 0 0 6px #111 inset, 0 10px 30px rgba(0,0,0,.45);
+  }
+  .eyeInner{
+    width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+    transform-origin:center;
+    animation: blink 6.2s ease-in-out infinite;
+  }
+  .eyes .eye:nth-child(2) .eyeInner{ animation-delay: 1.2s; }
+  .pupil{
+    width:42%; aspect-ratio:1/1; border-radius:50%; background:#111; position:relative;
+    animation: micro 6s ease-in-out infinite;
+  }
+  .pupil::after{
+    content:""; position:absolute; top:18%; left:20%; width:22%; aspect-ratio:1/1; border-radius:50%;
+    background: rgba(255,255,255,.9);
+  }
+  @keyframes blink{
+    0%, 90%  { transform: scaleY(1); }
+    94%      { transform: scaleY(0.07); }
+    100%     { transform: scaleY(1); }
+  }
+  @keyframes micro{
+    0%,100% { transform: translate(0,0); }
+    20%     { transform: translate(-2%, 1%); }
+    40%     { transform: translate(2%, -1%); }
+    60%     { transform: translate(-1%, -1%); }
+    80%     { transform: translate(1%, 1%); }
+  }
 </style>
 </head>
 <body>
@@ -226,7 +284,11 @@
 
       <span class="state"><span id="statusDot" class="badgeDot off">off</span></span>
       <button id="connectToggle" class="btn">연결</button>
-      <button id="runToggle" class="btn">▶ 실행</button>
+
+      <!-- ★ 추가: 테스트 버튼 -->
+      <button id="testBtn" class="btn" title="코딩 화면에서 테스트 실행">테스트</button>
+      <button id="runToggle" class="btn" title="전체화면 눈동자 실행">실행</button>
+
       <button id="fsBtn" class="btn" title="전체화면">전체화면</button>
     </div>
   </header>
@@ -297,8 +359,20 @@
     </category>
   </xml>
 
-  <!-- (미사용) 전체화면 오버레이 -->
-  <div id="playOverlay" aria-hidden="true"></div>
+  <!-- 전체화면 오버레이: 눈동자 -->
+  <div id="playOverlay" aria-hidden="true">
+    <div class="topbar">
+      <button id="overlayClose">종료</button>
+    </div>
+    <div class="body">
+      <div id="eyesStage" aria-label="귀여운 눈동자">
+        <div class="eyes">
+          <div class="eye"><div class="eyeInner"><div class="pupil"></div></div></div>
+          <div class="eye"><div class="eyeInner"><div class="pupil"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
 
 <script>
 /* ================= Blockly 기본 설정 ================= */
@@ -363,7 +437,6 @@ var PINS_OUT=[["OUT1","OUT1"],["OUT2","OUT2"],["OUT3","OUT3"],["OUT4","OUT4"],["
 var SPEEDS=Array.from({length:41},(_,i)=>20-i).map(v=>[String(v),String(v)]);
 var TIMES100=Array.from({length:10},(_,i)=>100*(i+1)).map(v=>[String(v),String(v)]);
 var LED_TGT=[].concat(PINS_OUT,[["CPU","CPU"]]);
-/* ✅ 수정됨: 괄호 오류 제거 */
 var LED_MODE=[["밝기","BRIGHT"],["숨쉬기","BREATHE"]];
 var LED_VALS=Array.from({length:20},(_,i)=>[String(i),String(i)]);
 
@@ -474,11 +547,11 @@ applyHeaderHeight();
 /* ================= BLE & 로그 ================= */
 var SERVICE_UUID=0xFFF0;
 var bleDevice=null,bleServer=null,bleService=null,writeChar=null,notifyChar=null;
-var isConnected=false, isRunning=false;
+var isConnected=false, isRunning=false, isFullscreenRun=false;
 var $=id=>document.getElementById(id);
 var log=function(m){ var L=$('log'); L.textContent+=m+"\n"; L.scrollTop=L.scrollHeight; };
 var dot=$('statusDot');
-var btnConnect=$('connectToggle'), btnRun=$('runToggle');
+var btnConnect=$('connectToggle'), btnRun=$('runToggle'), btnTest=$('testBtn');
 
 var enc = s=> new TextEncoder().encode(s);
 
@@ -486,16 +559,15 @@ function resetBleRefs(){ bleDevice=null; bleServer=null; bleService=null; writeC
 function setConnected(v){
   isConnected=v;
   btnConnect.textContent=v?'해제':'연결';
-  btnRun.disabled=false; /* BLE 없어도 실행 가능 */
   dot.classList.toggle('on',v); dot.classList.toggle('off',!v);
   dot.textContent=v?'on':'off';
   if(!v) setRunning(false);
 }
-/* 실행해도 전체화면 오버레이를 띄우지 않음 */
 function setRunning(v){
   isRunning=v;
-  btnRun.textContent=v?'■ 정지':'▶ 실행';
+  btnRun.textContent = v ? '■ 정지' : '실행';
   btnRun.style.background = v ? '#ef4444' : '#16a34a';
+  btnTest.disabled = v; // 실행 중에는 테스트 버튼 비활성화(중복 실행 방지)
 }
 
 function connectBLE(){
@@ -646,7 +718,7 @@ $('openBtn').addEventListener('click', loadProject);
   divider.addEventListener('touchstart', onDown, {passive:false});
 })();
 
-/* ================= 패널 토글 & 전체화면 ================= */
+/* ================= 패널 토글 & 전체화면 버튼 ================= */
 var panelHandle=document.getElementById('panelHandle');
 function syncHandle(){
   var collapsed = document.body.classList.contains('panel-collapsed');
@@ -672,7 +744,10 @@ fsBtn.onclick=async function(){ if(document.fullscreenElement) await exitFS(); e
 document.addEventListener('fullscreenchange', syncFSLabel);
 syncFSLabel();
 
-/* ================= 실행 큐 & 이벤트 실행기 ================= */
+/* ================= 실행/테스트 & 오버레이 제어 ================= */
+var overlay=document.getElementById('playOverlay');
+var overlayClose=document.getElementById('overlayClose');
+
 var eventPrograms = {};
 var queue = [];
 var queueBusy = false;
@@ -712,17 +787,49 @@ function triggerEvent(name){
     processQueue(myToken);
   }
 }
-btnRun.onclick = function(){
-  if(!isRunning){
-    eventPrograms = buildEventPrograms();
-    cancelToken++; queue = [];
-    setRunning(true);
-  }else{
-    cancelToken++; queue=[];
-    setRunning(false);
-    try{ if(writeChar) writeChar.writeValue(enc('S\n')); }catch(e){}
+
+/* 테스트 실행(코딩 화면) */
+function startTest(){
+  if(isRunning) return;
+  eventPrograms = buildEventPrograms();
+  cancelToken++; queue = [];
+  isFullscreenRun = false;
+  setRunning(true);
+}
+/* 전체화면 눈동자 실행 */
+async function startFullRun(){
+  if(isRunning) return;
+  eventPrograms = buildEventPrograms();
+  cancelToken++; queue = [];
+  isFullscreenRun = true;
+  setRunning(true);
+  // 눈 오버레이 표시 + 전체화면 시도
+  overlay.classList.add('show');
+  overlay.setAttribute('aria-hidden','false');
+  try{ if(overlay.requestFullscreen) await overlay.requestFullscreen(); }catch(e){}
+  // 카메라 자동 시작(없으면)
+  if(!camOn){
+    try{ await startCam(); }catch(e){ log('⚠️ 실행 중 카메라 시작 실패: '+e); }
   }
-};
+}
+/* 정지 */
+async function stopRun(){
+  cancelToken++; queue=[];
+  setRunning(false);
+  if(isFullscreenRun){
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    isFullscreenRun = false;
+    try{ if(document.fullscreenElement) await document.exitFullscreen(); }catch(e){}
+  }
+  try{ if(writeChar) writeChar.writeValue(enc('S\n')); }catch(e){}
+}
+
+/* 버튼 바인딩 */
+btnTest.onclick = ()=> { if(!isRunning) startTest(); };
+btnRun.onclick  = ()=> { if(!isRunning) startFullRun(); else stopRun(); };
+overlayClose.onclick = ()=> { if(isRunning) stopRun(); };
+overlay.addEventListener('keydown', function(e){ if(e.key==='Escape' && isRunning) stopRun(); });
 
 /* ================= 카메라: ROI(네모 박스) 내부만 색 인식 + 움직임 초점 ================= */
 const camWrap   = document.getElementById('camWrap');
@@ -757,9 +864,9 @@ const HOLD_MS = 250;                     // 색 변경 디바운스
 const MASS_MIN = 12000;                  // 모션 총량 임계(초점 박스 표시용)
 const FOCUS_LERP = 0.20;                 // 초점 이동 스무딩
 
-/* ROI 가중치 임계: ROI 픽셀 수 × 계수 (환경에 맞게 0.18~0.35 사이 조정) */
+/* ROI 가중치 임계: ROI 픽셀 수 × 계수 */
 const ROI_MIN_WEIGHT_PER_PIXEL = 0.22;
-const ROI_MIN_WEIGHT_FLOOR = 30;         // 너무 작은 박스 대비 바닥값
+const ROI_MIN_WEIGHT_FLOOR = 30;
 
 const procCvs = document.createElement('canvas');
 const procCtx = procCvs.getContext('2d', { willReadFrequently:true });
