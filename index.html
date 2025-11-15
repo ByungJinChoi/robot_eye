@@ -3982,5 +3982,98 @@ setTimeout(()=>document.addEventListener('click', closer, true), 0);
 })();
 </script>
 
+
+<script>
+/* === XROBO patch (non-destructive): overlay event-run + friendlier test logs === */
+(function(){
+  const $=id=>document.getElementById(id);
+
+  /* 1) Patch sendRaw: on BLE disconnect, log a friendlier virtual-run message instead of repeated "BLE미연결" */
+  try{
+    if (typeof window.sendRaw === 'function' && !window.__xrobo_sendRaw_patched){
+      const __origSendRaw = window.sendRaw;
+      window.sendRaw = function(s){
+        try{
+          // No BLE present -> just log once per command without scaring the user
+          if(!window.writeChar){
+            if (typeof log === 'function') log((window.testActive ? '🧪 테스트 가상전송: ' : '🧪 가상전송: ') + s);
+            return Promise.resolve();
+          }
+        }catch(_){ /* ignore */ }
+        return __origSendRaw(s);
+      };
+      window.__xrobo_sendRaw_patched = true;
+    }
+  }catch(_){ /* ignore */ }
+
+  /* 2) Overlay event-run: reuse the existing "test" engine (color detection + eventPrograms) */
+  let overlayRunActive = false;
+  async function startOverlayRun(){
+    if (overlayRunActive) return;
+    try{
+      if (typeof buildEventPrograms === 'function') {
+        // share the same event queue with test engine
+        eventPrograms = buildEventPrograms();
+      }
+      // reset queue/cancel token shared with test engine
+      try{ testCancelToken++; }catch(_){}
+      try{ q.length = 0; }catch(_){}
+      try{ qBusy = false; }catch(_){}
+    }catch(_){}
+
+    // make sure camera & detector are alive
+    try{ if (typeof startCam === 'function') await startCam(); }catch(_){}
+
+    // turn on the shared detector
+    try{ window.testActive = true; }catch(_){}
+
+    overlayRunActive = true;
+    if (typeof setRunning === 'function') setRunning(true);
+    if (typeof log === 'function') log('👀 전체화면 이벤트 실행 시작');
+  }
+  async function stopOverlayRun(){
+    if (!overlayRunActive) return;
+    // stop detector & clear queue
+    try{ window.testActive = false; }catch(_){}
+    try{ testCancelToken++; }catch(_){}
+    try{ q.length = 0; }catch(_){}
+    try{ qBusy = false; }catch(_){}
+
+    if (typeof setRunning === 'function') setRunning(false);
+    try{ if (typeof stopCam === 'function') stopCam(); }catch(_){}
+
+    overlayRunActive = false;
+    if (typeof log === 'function') log('👀 전체화면 이벤트 실행 종료');
+  }
+
+  /* 3) Intercept Run button: 
+        - If '이벤트' 블록(xrobo_start)이 존재하면 전체화면(눈) + 색상 이벤트 방식으로 실행/정지 토글
+        - 아니면 기존 동작(연결 필요, 순차 실행) 유지
+  */
+  const runBtn = $('runToggle');
+  if (runBtn && !runBtn.__xrobo_patched){
+    const originalHandler = runBtn.onclick ? runBtn.onclick.bind(runBtn) : null;
+    runBtn.onclick = async function(){
+      let hasEvent = false;
+      try{ hasEvent = !!(ws && ws.getBlocksByType && ws.getBlocksByType('xrobo_start', true).length); }catch(_){}
+      if (hasEvent){
+        if (!overlayRunActive) await startOverlayRun();
+        else await stopOverlayRun();
+      }else{
+        if (originalHandler) return originalHandler();
+      }
+    };
+    runBtn.__xrobo_patched = true;
+  }
+
+  /* 4) If user leaves fullscreen via system gesture, keep program running but eyes overlay will close via setRunning(false) if needed.
+        (We don't force-stop; user can press [실행] again to stop.)
+  */
+  document.addEventListener('fullscreenchange', function(){
+    // no action needed; existing code already updates UI via setRunning wrapper
+  });
+})();
+</script>
+
 </body>
 </html>
