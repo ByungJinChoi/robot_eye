@@ -298,6 +298,41 @@
   #panelHandle { display: none !important; }
 </style>
 
+<style id="xrobo-kp4x4-v14-style">
+  /* 4x4 키패드 (전화패드 스타일 + 외곽 라인) - 전역 70% 축소 */
+  :root { --xroboKpScale: .7; }
+  #xrobo-kp4x4-v14{
+    position:absolute; left:0; top:0; display:none; z-index:2147483647;
+    background:#000; border:2px solid #000; border-radius:calc(16px * var(--xroboKpScale));
+    padding: calc(12px * var(--xroboKpScale)); box-shadow:0 16px 46px rgba(0,0,0,.45);
+    user-select:none; touch-action:manipulation;
+  }
+  #xrobo-kp4x4-v14.show{ display:block; }
+  #xrobo-kp4x4-v14 .display{
+    margin-bottom:calc(10px * var(--xroboKpScale)); background:#0b0f14; color:#e5e7eb;
+    border:1px solid #1f2937; border-radius:calc(10px * var(--xroboKpScale));
+    padding:calc(10px * var(--xroboKpScale)) calc(12px * var(--xroboKpScale));
+    font-weight:800; font-size:calc(18px * var(--xroboKpScale)); letter-spacing:.6px; min-height:24px;
+  }
+  #xrobo-kp4x4-v14 .grid{
+    display:grid; grid-template-columns: repeat(4, calc(56px * var(--xroboKpScale)));
+    grid-auto-rows: calc(56px * var(--xroboKpScale));
+    gap: calc(10px * var(--xroboKpScale));
+  }
+  #xrobo-kp4x4-v14 button{
+    border:0; border-radius:calc(12px * var(--xroboKpScale)); background:#fff; color:#111;
+    font-weight:900; font-size:calc(20px * var(--xroboKpScale));
+    box-shadow:0 calc(4px * var(--xroboKpScale)) calc(14px * var(--xroboKpScale)) rgba(0,0,0,.22);
+    cursor:pointer;
+  }
+  #xrobo-kp4x4-v14 button:active{ transform:translateY(1px); }
+  #xrobo-kp4x4-v14 .op{ background:#e6eefc; color:#0b3aa6; font-weight:800; }
+  #xrobo-kp4x4-v14 .back{ background:#111827; color:#fff; font-size:calc(18px * var(--xroboKpScale)); }
+  #xrobo-kp4x4-v14 .clear{ background:#e5e7eb; color:#111827; font-size:calc(16px * var(--xroboKpScale)); font-weight:800; }
+  #xrobo-kp4x4-v14 .wide{ grid-column: span 2; height:calc(56px * var(--xroboKpScale)); font-size:calc(18px * var(--xroboKpScale)); font-weight:800; }
+  #xrobo-kp4x4-v14 .ok{ background:#2563eb; color:#fff; }
+  #xrobo-kp4x4-v14 .cancel{ background:#6b7280; color:#fff; }
+</style>
 </head>
 <body>
   <!-- 헤더 -->
@@ -1404,6 +1439,453 @@ function stopOverlayEyes(){
       }
     }catch(_){ /* no-op */ }
   });
+})();
+</script>
+<script id="xrobo-kp4x4-v14-script">
+(function(){
+  // Only enable keypad on Android; on desktop Chrome, keypad is disabled.
+  if(!/Android/i.test(navigator.userAgent||'')) { return; }
+
+  'use strict';
+  const isAndroid = /Android/i.test(navigator.userAgent||'');
+  if(!isAndroid){ return; }
+  const hasPointer = 'PointerEvent' in window;
+
+  let pad, disp, grid;
+  let activeInput = null;     // html input (if captured)
+  let activeField = null;     // Blockly field instance (FieldNumber)
+  let promptCallback = null;  // prompt override
+  let buffer = '';
+  let rafId = 0;
+  let lastAnchor = {x: window.innerWidth/2, y: 140};
+  let outsideBound = false;
+  let committing = false;
+
+  // press dedup (for some Androids firing twice)
+  let lastPressLabel = '';
+  let lastPressTime = 0;
+  const PRESS_DEBOUNCE_MS = 160;
+
+  /* ===== utils ===== */
+  function safeEval(expr){
+    if(typeof expr!=='string') return NaN;
+    expr = expr.replace(/[^0-9+\-*/\s]/g,'').trim();
+    if(!expr) return NaN;
+    const tokens = expr.match(/(\d+|[+\-*/])/g) || [];
+    if(tokens.length===0) return NaN;
+    const values=[], ops=[]; let expectNum=true, unary=null;
+    function prec(op){ return (op==='*'||op==='/')?2:1; }
+    function apply(){ const op=ops.pop(), b=values.pop(), a=values.pop();
+      values.push(op==='+'?a+b: op==='-'?a-b: op==='*'?a*b: (b===0?0:Math.trunc(a/b))); }
+    for(const tk of tokens){
+      if(/^\d+$/.test(tk)){
+        let v=parseInt(tk,10); if(unary==='-') v=-v; unary=null; values.push(v); expectNum=false;
+      }else{
+        if(expectNum){ if(tk==='+'||tk==='-') unary=tk; }
+        else{ while(ops.length && prec(ops[ops.length-1])>=prec(tk)) apply(); ops.push(tk); expectNum=true; }
+      }
+    }
+    while(ops.length) apply();
+    return values.length? values[0]:NaN;
+  }
+  function dispatch(el, type){ try{ el.dispatchEvent(new Event(type, {bubbles:true})); }catch(_){ } }
+
+  /* ===== keypad UI ===== */
+  function buildPad(){
+    if(pad) return pad;
+    pad = document.createElement('div');
+    pad.id = 'xrobo-kp4x4-v14';
+    pad.innerHTML = '<div class="display" aria-live="polite"></div><div class="grid" role="group" aria-label="숫자패드"></div>';
+    document.body.appendChild(pad);
+    disp = pad.querySelector('.display'); grid = pad.querySelector('.grid');
+
+    const layout = [
+      {t:'1'},{t:'2'},{t:'3'},{t:'←',cls:'back'},
+      {t:'4'},{t:'5'},{t:'6'},{t:'C',cls:'clear'},
+      {t:'7'},{t:'8'},{t:'9'},{t:'+',cls:'op'},
+      {t:'*',cls:'op'},{t:'0'},{t:'/',cls:'op'},{t:'-',cls:'op'},
+      // order: 확인 -> 취소
+      {t:'확인',cls:'wide ok'},{t:'취소',cls:'wide cancel'}
+    ];
+    layout.forEach(k=>{
+      const b=document.createElement('button'); b.type='button'; b.textContent=k.t;
+      if(k.cls) k.cls.split(' ').forEach(c=>b.classList.add(c));
+      grid.appendChild(b);
+    });
+
+    const press = (label)=>{
+      const now = performance.now();
+      if(label === lastPressLabel && (now - lastPressTime) < PRESS_DEBOUNCE_MS){
+        return; // ignore duplicate
+      }
+      lastPressLabel = label; lastPressTime = now;
+
+      if(label==='확인'){ commit(); return; }
+      if(label==='취소'){ cancel(); return; }
+      if(label==='C'){ buffer=''; sync(); return; }
+      if(label==='←'){ buffer = buffer.slice(0, buffer.length-1); sync(); return; }
+      if(/^[0-9+\-*/]$/.test(label)){ buffer += label; sync(); return; }
+    };
+
+    function getButtonFromEvent(e){
+      if(e.type==='touchstart' && e.touches && e.touches[0]){
+        const t=e.touches[0]; const el=document.elementFromPoint(t.clientX, t.clientY);
+        return el && el.closest && el.closest('button');
+      }
+      return e.target && e.target.closest && e.target.closest('button');
+    }
+
+    const onPress = (e)=>{
+      const btn = getButtonFromEvent(e); if(!btn) return;
+      e.preventDefault(); e.stopPropagation();
+      press(btn.textContent);
+    };
+
+    // Single path
+    if(!grid.dataset.bound){
+      if(hasPointer){
+        grid.addEventListener('pointerdown', onPress, true);
+      }else if('ontouchstart' in window){
+        grid.addEventListener('touchstart', onPress, {passive:false, capture:true});
+      }else{
+        grid.addEventListener('mousedown', onPress, true);
+      }
+      // prevent native click duplication
+      grid.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); }, true);
+      grid.dataset.bound = '1';
+    }
+
+    // outside handler (single-binding)
+    const outside = (e)=>{
+      if(!pad.classList.contains('show')) return;
+      if(pad.contains(e.target)) return;
+      if(activeInput && e.target===activeInput) return;
+      commit();
+    };
+    if(!outsideBound){
+      if(hasPointer){
+        document.addEventListener('pointerdown', outside, true);
+      }else if('ontouchstart' in window){
+        document.addEventListener('touchstart', outside, {passive:false, capture:true});
+      }else{
+        document.addEventListener('mousedown', outside, true);
+      }
+      outsideBound = true;
+    }
+
+    return pad;
+  }
+
+  function showPad(){ buildPad().classList.add('show'); }
+  function hidePad(){ if(pad) pad.classList.remove('show'); }
+
+  function positionNearRect(r){
+    const br = pad.getBoundingClientRect();
+    const pw=br.width, ph=br.height;
+    const gap=8, vx=window.scrollX||0, vy=window.scrollY||0;
+    let left=r.right + gap + vx, top=r.top + vy;
+    if(left + pw > vx + innerWidth - 6){ left = r.left + vx - pw - gap; }
+    if(top + ph > vy + innerHeight - 6){ top = Math.max(vy+6, vy + innerHeight - ph - 6); }
+    if(top < vy + 6) top = vy + 6;
+    pad.style.left = left + 'px'; pad.style.top = top + 'px';
+  }
+  function positionNearInput(input){ positionNearRect(input.getBoundingClientRect()); }
+  function positionNearPoint(x,y){ positionNearRect({left:x, right:x, top:y, bottom:y, width:0, height:0}); }
+  function positionNearField(field){
+    try{
+      const root = field && field.getClickTarget_ ? field.getClickTarget_() : (field && field.getSvgRoot && field.getSvgRoot());
+      if(root && root.getBoundingClientRect){
+        positionNearRect(root.getBoundingClientRect());
+        return true;
+      }
+    }catch(_){}
+    return false;
+  }
+
+  function startFollowInput(input){
+    cancelAnimationFrame(rafId);
+    const tick=()=>{ if(activeInput){ positionNearInput(input); rafId=requestAnimationFrame(tick);} };
+    tick();
+  }
+  function stopFollow(){ cancelAnimationFrame(rafId); rafId=0; }
+
+  function sync(){
+    if(disp) disp.textContent = buffer;
+    if(activeInput){
+      activeInput.value = buffer;
+      dispatch(activeInput,'input');
+    }
+  }
+
+  function evaluateAndClamp(raw, inputEl){
+    let num = safeEval(String(raw||'').trim());
+    if(!Number.isFinite(num)) return { ok:false, val:String(raw||'') };
+    const min = Number(inputEl?.getAttribute('min'));
+    const max = Number(inputEl?.getAttribute('max'));
+    if(Number.isFinite(min)) num = Math.max(min, num);
+    if(Number.isFinite(max)) num = Math.min(max, num);
+    return { ok:true, val:String(num) };
+  }
+
+  function commit(){
+    if(committing) return;
+    committing = true;
+    try{
+      if(activeField && !activeInput){
+        // Field only (no html input captured): set directly
+        const { ok, val } = evaluateAndClamp(buffer, null);
+        try{ activeField.setValue(ok ? val : buffer); }catch(_){}
+        activeField = null;
+      }else if(activeField && activeInput){
+        const { ok, val } = evaluateAndClamp(buffer, activeInput);
+        try{ activeField.setValue(ok ? val : buffer); }catch(_){}
+        activeField = null;
+      }else if(typeof promptCallback === 'function'){
+        const n = safeEval(buffer); const v = Number.isFinite(n) ? String(n) : buffer;
+        try{ promptCallback(v); }catch(_){}
+        promptCallback = null;
+      }else if(activeInput){
+        const { ok, val } = evaluateAndClamp(buffer, activeInput);
+        activeInput.value = val;
+        dispatch(activeInput,'input');
+        dispatch(activeInput,'change');
+      }
+      try{ if(window.Blockly && Blockly.WidgetDiv && typeof Blockly.WidgetDiv.hide==='function'){ Blockly.WidgetDiv.hide(); } }catch(_){}
+      activeInput = null;
+      stopFollow(); hidePad();
+    }finally{
+      committing = false;
+    }
+  }
+
+  function cancel(){
+    activeField = null; promptCallback = null; activeInput = null;
+    stopFollow(); hidePad();
+  }
+
+  /* ===== discover Blockly input robustly ===== */
+  function findBlocklyInput(){
+    try{
+      if(window.Blockly){
+        // 1) Preferred static ref
+        if(Blockly.FieldTextInput && Blockly.FieldTextInput.htmlInput_){
+          return Blockly.FieldTextInput.htmlInput_;
+        }
+        // 2) WidgetDiv container
+        if(Blockly.WidgetDiv && Blockly.WidgetDiv.DIV){
+          const el = Blockly.WidgetDiv.DIV.querySelector('input,textarea');
+          if(el) return el;
+        }
+      }
+      // 3) Document fallback
+      const q = document.querySelector('.blocklyHtmlInput, .blocklyHtmlTextInput, input.blocklyHtmlInput');
+      if(q) return q;
+    }catch(_){}
+    return null;
+  }
+
+  /* ===== openers ===== */
+  function setupInputPlatform(input){
+    if(isAndroid){
+      input.setAttribute('readonly', 'readonly');
+      input.setAttribute('inputmode','none');
+      input.addEventListener('touchstart', ev=>{ ev.preventDefault(); ev.stopPropagation(); }, {capture:true, passive:false});
+      setTimeout(()=>{ try{ input.blur(); }catch(_){ } }, 0);
+    }else{
+      input.removeAttribute('readonly');
+      input.setAttribute('inputmode','numeric');
+      try{ input.focus(); }catch(_){}
+      input.addEventListener('keydown', function(e){
+        if(e.key==='Enter'){ e.preventDefault(); commit(); }
+        else if(e.key==='Escape'){ e.preventDefault(); cancel(); }
+      }, {once:true, capture:true});
+    }
+    input.setAttribute('pattern','[0-9+\\-*/]*');
+    input.setAttribute('autocomplete','off');
+    input.setAttribute('autocorrect','off');
+    input.setAttribute('autocapitalize','off');
+    input.setAttribute('spellcheck','false');
+  }
+
+  function openForInput(input, field){
+    activeInput = input; activeField = field || null; promptCallback = null;
+    setupInputPlatform(input);
+    buffer = String(input.value||'');
+    showPad();
+    positionNearInput(input);
+    startFollowInput(input);
+    sync();
+  }
+
+  function openForField(field){
+    activeField = field || null; activeInput = null; promptCallback = null;
+    buffer = (field && typeof field.getValue==='function') ? String(field.getValue()||'') : '';
+    showPad();
+    // position near field rect
+    if(!positionNearField(field)){
+      positionNearPoint(lastAnchor.x, lastAnchor.y);
+    }
+    sync();
+  }
+
+  function openForPrompt(defVal, anchor){
+    activeInput = null; activeField = null;
+    buffer = String(defVal||'');
+    showPad(); positionNearPoint(anchor.x, anchor.y); sync();
+  }
+
+  /* ===== hooks ===== */
+  function afterEditorOpened(field){
+    // Try to capture the real input; if not found, open near field and poll briefly.
+    let found = false;
+    const adopt = ()=>{
+      const input = findBlocklyInput();
+      if(input){
+        if(!pad || !pad.classList.contains('show')) showPad();
+        openForInput(input, field);
+        found = true;
+        return true;
+      }
+      return false;
+    };
+    // attempt immediately
+    if(adopt()) return;
+    // fallback: show near field & poll a few times to adopt input later
+    openForField(field);
+    let tries = 0;
+    const iv = setInterval(()=>{
+      if(adopt() || ++tries > 8){ clearInterval(iv); }
+    }, 50);
+  }
+
+  function patchFieldNumber(){
+    try{
+      if(!window.Blockly || !Blockly.FieldNumber || Blockly.FieldNumber.__xrobo_v14) return;
+      function wrap(name){
+        const orig = Blockly.FieldNumber.prototype[name];
+        if(!orig) return false;
+        Blockly.FieldNumber.prototype[name] = function(){
+          const rv = orig.apply(this, arguments);
+          const self = this;
+          setTimeout(()=> afterEditorOpened(self), 0);
+          return rv;
+        };
+        return true;
+      }
+      wrap('showEditor_') || wrap('showEditor');
+      Blockly.FieldNumber.__xrobo_v14 = true;
+    }catch(_){}
+  }
+
+  function patchFieldTextInput(){
+    try{
+      if(!window.Blockly || !Blockly.FieldTextInput || Blockly.FieldTextInput.__xrobo_v14) return;
+      const proto = Blockly.FieldTextInput.prototype;
+      const origShow = proto.showEditor_;
+      proto.showEditor_ = function(opt_e){
+        const rv = origShow ? origShow.apply(this, arguments) : undefined;
+        // Only for numeric instances
+        if((typeof Blockly.FieldNumber!=='undefined') && (this instanceof Blockly.FieldNumber)){
+          const self = this;
+          setTimeout(()=> afterEditorOpened(self), 0);
+        }
+        return rv;
+      };
+      // If some builds use prompt editor
+      const origPrompt = proto.showPromptEditor_;
+      if(typeof origPrompt === 'function'){
+        proto.showPromptEditor_ = function(){
+          if((typeof Blockly.FieldNumber!=='undefined') && (this instanceof Blockly.FieldNumber)){
+            openForPrompt(this.getValue ? this.getValue() : '', lastAnchor);
+            return;
+          }
+          return origPrompt.apply(this, arguments);
+        };
+      }
+      Blockly.FieldTextInput.__xrobo_v14 = true;
+    }catch(_){}
+  }
+
+  function patchPrompt(){
+    try{
+      if(!window.Blockly) return;
+      const numLike = v => /^[\s]*[+\-]?\d+(?:[\s]*[+\-*/][\s]*[+\-]?\d+)*[\s]*$/.test(String(v||''));
+      if(Blockly.dialog && typeof Blockly.dialog.setPrompt==='function' && !Blockly.dialog.__xrobo_v14){
+        Blockly.dialog.setPrompt(function(msg, defVal, cb){
+          const looksNumeric = numLike(defVal) || /value|값|number|숫자/i.test(String(msg||''));
+          if(looksNumeric){
+            promptCallback = v => { try{ cb(v); }catch(_){}};
+            openForPrompt(defVal, lastAnchor);
+          }else{
+            const ans = window.prompt(String(msg||''), String(defVal||''));
+            try{ cb(ans); }catch(_){}
+          }
+        });
+        Blockly.dialog.__xrobo_v14 = true;
+      }else if(!Blockly.__xrobo_prompt_v14){
+        const old = Blockly.prompt;
+        Blockly.prompt = function(message, defaultValue, callback){
+          const looksNumeric = numLike(defaultValue) || /value|값|number|숫자/i.test(String(message||''));
+          if(looksNumeric){
+            promptCallback = v=>{ try{ callback(v); }catch(_){}};
+            openForPrompt(defaultValue, lastAnchor);
+          }else{
+            return old ? old.apply(this, arguments) : window.prompt(message, defaultValue);
+          }
+        };
+        Blockly.__xrobo_prompt_v14 = true;
+      }
+    }catch(_){}
+  }
+
+  // Fallback: whenever any blockly html input gains focus
+  document.addEventListener('focusin', function(e){
+    const t = e.target;
+    if(!t) return;
+    // try to identify blockly widget input
+    if(t.classList && (t.classList.contains('blocklyHtmlInput') || t.classList.contains('blocklyHtmlTextInput'))){
+      openForInput(t, null);
+      const onBlur = ()=>{ try{ commit(); }catch(_){ cancel(); } t.removeEventListener('blur', onBlur); };
+      t.addEventListener('blur', onBlur);
+    } else {
+      // Android 전용: 멀티서보 모달 내부 지연(speed) 입력에도 커스텀 숫자패드 연결
+      try{
+        const uaOk = /Android/i.test(navigator.userAgent||'');
+        if(uaOk && t.matches('#servoModal .speedbox input, #boardStage .speedbox input')){
+          // 기본 키보드가 뜨지 않도록 잠시 readonly 후 해제 + inputmode 힌트
+          try{ t.setAttribute('inputmode','none'); t.setAttribute('autocomplete','off'); t.setAttribute('autocorrect','off'); }catch(_){}
+          try{ t.setAttribute('readonly','readonly'); setTimeout(()=>{ try{ t.removeAttribute('readonly'); }catch(_){ } }, 0); }catch(_){}
+          openForInput(t, null);
+          const onBlur = ()=>{ try{ commit(); }catch(_){ cancel(); } t.removeEventListener('blur', onBlur); };
+          t.addEventListener('blur', onBlur);
+        }
+      }catch(_){}
+    }
+  }, true);
+
+  // Anchor point for prompt
+  (function(){
+  // Only enable keypad on Android; on desktop Chrome, keypad is disabled.
+  if(!/Android/i.test(navigator.userAgent||'')) { return; }
+
+    const root = document.getElementById('blocklyDiv') || document.body;
+    const savePt = (e)=>{ lastAnchor = {x:e.clientX, y:e.clientY}; };
+    if(hasPointer) root.addEventListener('pointerdown', savePt, true);
+    else{
+      root.addEventListener('mousedown', savePt, true);
+      root.addEventListener('touchstart', (e)=>{ if(e.touches&&e.touches[0]) lastAnchor={x:e.touches[0].clientX, y:e.touches[0].clientY}; }, {capture:true, passive:true});
+    }
+  })();
+
+  function tryPatch(){ patchFieldNumber(); patchFieldTextInput(); patchPrompt(); }
+  if(document.readyState==='complete' || document.readyState==='interactive'){
+    tryPatch();
+  }else{
+    window.addEventListener('DOMContentLoaded', tryPatch);
+  }
+  // Retry for late-loading builds
+  let tries=0; const iv=setInterval(()=>{ tryPatch(); if(++tries>12) clearInterval(iv); }, 300);
+
 })();
 </script>
 </body>
