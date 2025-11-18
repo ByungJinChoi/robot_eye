@@ -256,6 +256,25 @@
     position: fixed; left:0; bottom:0; width:12px; height:12px;
     opacity: .05; pointer-events:none; z-index:0; transform: scaleX(-1);
   }
+
+
+  /* === 파일 드롭다운 === */
+  .dropdown{ position:relative; }
+  .dropdown .menu{
+    position:absolute; right:0; top:calc(100% + 4px);
+    display:none; min-width:140px;
+    background:#ffffff; border:1px solid #d1d5db; border-radius:8px;
+    box-shadow:0 6px 16px rgba(0,0,0,.12); padding:6px; z-index:1000;
+  }
+  .dropdown .menu.show{ display:block; }
+  .dropdown .menu > button{
+    width:100%; background:transparent; border:0; cursor:pointer;
+    padding:8px 10px; border-radius:6px;
+    font-size:calc(13px * var(--uiScale));
+    text-align:left; color:#111827;
+  }
+  .dropdown .menu > button:hover{ background:#f3f4f6; }
+  #fileBtn{ background:#6b7280; color:#ffffff; }
 </style>
 
 <style id="xrobo-hsplit-style">
@@ -286,9 +305,16 @@
     <div id="topbar">
       <div class="title">XROBO BLE</div>
       <div class="spacer"></div>
+      <!-- 파일 드롭다운 -->
+      <div class="dropdown" id="fileDropdown">
+        <button id="fileBtn" class="btn" title="파일">파일 ▾</button>
+        <div id="fileMenu" class="menu" role="menu" aria-hidden="true">
+          <button data-cmd="new" role="menuitem">새로만들기</button>
+          <button data-cmd="save" role="menuitem">저장하기</button>
+          <button data-cmd="load" role="menuitem">불러오기</button>
+        </div>
+      </div>
 
-      <button id="saveBtn" class="btn" title="프로젝트 저장">저장</button>
-      <button id="openBtn" class="btn" title="프로젝트 불러오기">불러오기</button>
 
       <span class="state"><span id="statusDot" class="badgeDot off">off</span></span>
       <button id="connectToggle" class="btn">연결</button>
@@ -669,9 +695,6 @@ function loadProject(){
     }
   })();
 }
-$('saveBtn').addEventListener('click', saveProject);
-$('openBtn').addEventListener('click', loadProject);
-
 /* ================= 오른쪽 패널: 리사이저 ================= */
 (function(){
   var divider = document.getElementById('rightDivider');
@@ -1323,8 +1346,66 @@ function stopOverlayEyes(){
     if(cur > mx) applyWidth(mx);
   });
 })();
+
+/* === 파일 드롭다운 로직(저장/불러오기) === */
+(function(){
+  var btn  = document.getElementById('fileBtn');
+  var menu = document.getElementById('fileMenu');
+  if(!btn || !menu) return;
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    menu.classList.toggle('show');
+    menu.setAttribute('aria-hidden', menu.classList.contains('show') ? 'false' : 'true');
+  });
+  document.addEventListener('click', function(){
+    menu.classList.remove('show');
+    menu.setAttribute('aria-hidden','true');
+  });
+  menu.addEventListener('click', function(e){
+    var t = e.target;
+    if(!t || !t.getAttribute) return;
+    var cmd = t.getAttribute('data-cmd');
+    if(!cmd) return;
+    try{
+      if(cmd==='save'){ if(typeof saveProject==='function') saveProject(); }
+      else if(cmd==='load'){ if(typeof loadProject==='function') loadProject(); }
+    }catch(_){}
+    menu.classList.remove('show');
+    menu.setAttribute('aria-hidden','true');
+  });
+})();
 </script>
 
+
+<!-- === 새로만들기 전용 안전 바인딩(다른 코드 변경 없이 추가) === -->
+<script>
+(function(){
+  var menu = document.getElementById('fileMenu');
+  if(!menu) return;
+  if(menu.__x_new_bound) return;
+  menu.__x_new_bound = true;
+  menu.addEventListener('click', function(e){
+    try{
+      var cmd = e && e.target && e.target.getAttribute && e.target.getAttribute('data-cmd');
+      if(cmd !== 'new') return;
+      // 우선 워크스페이스가 있으면 정말 '새로 만들기'
+      if (typeof ws !== 'undefined' && ws && typeof ws.clear === 'function'){
+        if(confirm('현재 프로젝트를 모두 지우고 새로 만들까요?')){
+          try{ ws.clear(); }catch(_){}
+          try{ if(typeof multiServoConfigs !== 'undefined' && multiServoConfigs && typeof multiServoConfigs.clear==='function') multiServoConfigs.clear(); }catch(_){}
+          try{ if(typeof refreshCodeDebounced === 'function') refreshCodeDebounced(); }catch(_){}
+          try{ if(typeof log === 'function') log('🆕 새 프로젝트'); }catch(_){}
+        }
+      }else{
+        // 워크스페이스가 없으면 페이지 새로고침으로 폴백
+        if(confirm('페이지를 새로고침하여 새로 시작할까요?')){
+          location.reload();
+        }
+      }
+    }catch(_){ /* no-op */ }
+  });
+})();
+</script>
 </body>
 </html>
 
